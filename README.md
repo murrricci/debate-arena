@@ -4,6 +4,56 @@
 Судья-ИИ оценивает раунды по заданным критериям, победитель получает очки, а на отдельном
 окне крутится табло результатов.
 
+![Пиксельная арена](docs/img/pixel-arena.png)
+
+## Скриншоты
+
+| Турнирный матч | Турнирная таблица (ТВ 16:9) |
+|---|---|
+| ![Арена — турнир](docs/img/tournament-match.png) | ![Табло](docs/img/scoreboard.png) |
+
+| Регистрация бойца | Инструкция |
+|---|---|
+| ![Регистрация](docs/img/register.png) | ![Инструкция](docs/img/guide.png) |
+
+## Архитектура
+
+```mermaid
+flowchart LR
+  subgraph TV1["📺 Экран 1 — Арена"]
+    Arena["Arena /#/<br/>бой, пиксельные бойцы"]
+  end
+  subgraph TV2["📺 Экран 2 — Табло"]
+    Board["Scoreboard /#/scoreboard<br/>турнирная таблица + live"]
+  end
+  Reg["Register /#/<br/>регистрация, апгрейд, запуск турнира"]
+  Guide["Guide /#/guide<br/>правила"]
+
+  subgraph FE["Фронтенд (Vite + React, hash-router)"]
+    Arena
+    Board
+    Reg
+    Guide
+    Store["store.js / tournament.js<br/>(localStorage)"]
+    Bus["bus.js<br/>(BroadcastChannel)"]
+  end
+
+  Reg -->|пишет| Store
+  Arena -->|читает/пишет| Store
+  Board -->|читает| Store
+  Store <-->|синхрон между окнами| Bus
+  Arena -->|live-состояние боя| Bus --> Board
+
+  Arena -->|"/api/claude"| BE["Бэкенд-прокси<br/>Express (server.js)"]
+  BE -->|"x ретраи + фоллбэк моделей"| OR["OpenRouter API<br/>(или ProxyAPI)"]
+  OR --> LLM["LLM: бойцы (120B→70B→20B),<br/>судья, финал, генератор имён"]
+```
+
+**Поток одного боя:** Arena последовательно шлёт 10 запросов на `/api/claude` (3 раунда × [реплика A
++ реплика B + судья] + финальный вердикт). Бэкенд добавляет ключ, делает ретраи и фоллбэк по
+цепочке моделей, проксирует в OpenRouter. Результат начисляет очки в `store`, а `bus` транслирует
+состояние боя на табло во втором окне.
+
 ## Что внутри
 
 - **Арена** (`/`) — выбор двух бойцов и темы, бой в 3 раунда, HP-полоски, лента реплик,
