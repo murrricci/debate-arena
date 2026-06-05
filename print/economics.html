@@ -1,0 +1,121 @@
+<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>Debate Arena — экономика</title>
+<style>
+  @page { size: A4; margin: 12mm; }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, "Segoe UI", Arial, sans-serif; color: #1a1a2e; margin: 0; }
+  h1 { font-size: 24px; margin: 0 0 2mm; }
+  h1 .a { color: #b01a86; } h1 .b { color: #0090c0; }
+  .sub { color: #666; font-size: 12px; margin-bottom: 5mm; }
+  h2 { font-size: 15px; margin: 6mm 0 2mm; color: #b01a86; border-bottom: 2px solid #eee; padding-bottom: 1mm; }
+  .grid { display: flex; gap: 4mm; margin-bottom: 4mm; }
+  .box { flex: 1; border: 1.5px solid #e3d6ee; border-radius: 8px; padding: 3mm 4mm; background: #faf6fe; }
+  .box b { font-size: 20px; color: #7a1fb0; display: block; }
+  .box span { font-size: 10.5px; color: #666; }
+  table { width: 100%; border-collapse: collapse; font-size: 11px; }
+  th { background: #2a1840; color: #fff; padding: 2.5mm; text-align: left; font-size: 10px; }
+  th.num, td.num { text-align: right; }
+  td { padding: 2.5mm; border-bottom: 1px solid #eee; vertical-align: top; }
+  .mname { font-weight: 700; max-width: 70mm; }
+  .mnote { font-weight: 400; color: #777; font-size: 9.5px; margin-top: 1mm; line-height: 1.35; }
+  td.hi { font-weight: 800; color: #0a8f5b; background: #f0fbf5; }
+  tr:nth-child(even) td:not(.hi) { background: #fbfafd; }
+  .note { font-size: 10.5px; color: #555; line-height: 1.5; }
+  .rec { border-left: 4px solid #0a8f5b; background: #f0fbf5; padding: 3mm 4mm; border-radius: 0 8px 8px 0; font-size: 11px; line-height: 1.55; }
+  .warn { border-left: 4px solid #d9534f; background: #fdf3f2; padding: 3mm 4mm; border-radius: 0 8px 8px 0; font-size: 10.5px; line-height: 1.5; margin-top: 3mm; }
+  ul { margin: 1mm 0; padding-left: 5mm; } li { margin-bottom: 1mm; font-size: 11px; }
+  .foot { margin-top: 6mm; font-size: 9px; color: #999; }
+</style></head><body>
+
+<h1>🥊 <span class="a">DEBATE</span> <span class="b">ARENA</span> — экономика прогона</h1>
+<div class="sub">2 конференции по 2 дня · 3 000 + 2 000 гостей · цены: 4 июня 2026 (OpenRouter API, live)</div>
+
+<h2>Исходные допущения</h2>
+<div class="grid">
+  <div class="box"><b>10</b><span>запросов к модели на 1 бой<br>(3 раунда + судья + финал)</span></div>
+  <div class="box"><b>~7 200</b><span>токенов на бой<br>(6 000 вход + 1 200 выход)</span></div>
+  <div class="box"><b>420</b><span>боёв — базовый сценарий<br>(120 + 90 боёв/день × 2 дня)</span></div>
+  <div class="box"><b>840</b><span>боёв — пиковый сценарий<br>(2 ринга / плотный поток)</span></div>
+</div>
+<div class="note">
+  Число боёв ограничено пропускной способностью ринга (~3–4 мин/бой, ~80–120 боёв/день на один экран),
+  а не числом гостей: 5000 человек физически не успеют сыграть больше. При базовом сценарии это
+  ~3.02 млн токенов за оба мероприятия — мизер для любой платной модели.
+</div>
+
+<h2>Стоимость по сценариям</h2>
+<table>
+  <thead><tr>
+    <th>Модель / тариф</th>
+    <th class="num">Цена $/1M (вх/вых)</th>
+    <th class="num">За 1 бой</th>
+    <th class="num">Базовый (420)</th>
+    <th class="num">Пиковый (840)</th>
+  </tr></thead>
+  <tbody><tr>
+    <td class="mname">Free (gpt-oss, qwen:free и т.п.)<div class="mnote">Жёсткие rate-limit (429), часто «No backends». На потоке 5000 гостей нестабильно — нужен платный фоллбэк.</div></td>
+    <td class="num">$0/$0</td>
+    <td class="num">$0.0000/бой</td>
+    <td class="num hi">$0.0000</td>
+    <td class="num">$0.0000</td>
+  </tr><tr>
+    <td class="mname">Qwen Flash (qwen3.5-flash)<div class="mnote">Самая дешёвая из вменяемых. Быстрая, реплики бойцов тянет; для судьи слабовата.</div></td>
+    <td class="num">$0.065/$0.26</td>
+    <td class="num">$0.0007/бой</td>
+    <td class="num hi">$0.295</td>
+    <td class="num">$0.590</td>
+  </tr><tr>
+    <td class="mname">DeepSeek V3.2<div class="mnote">Отличный баланс цена/качество. Хорошо держит русский и JSON судьи.</div></td>
+    <td class="num">$0.229/$0.343</td>
+    <td class="num">$0.0018/бой</td>
+    <td class="num hi">$0.750</td>
+    <td class="num">$1.50</td>
+  </tr><tr>
+    <td class="mname">Qwen3.5-397B-A17B<div class="mnote">Флагман Qwen3.5 (397B, MoE A17B, контекст 262k). Топ-качество дебатов и судейства.</div></td>
+    <td class="num">$0.39/$2.34</td>
+    <td class="num">$0.0051/бой</td>
+    <td class="num hi">$2.16</td>
+    <td class="num">$4.32</td>
+  </tr><tr>
+    <td class="mname">Claude Haiku 4.5 (API)<div class="mnote">Pay-as-you-go. Дешёвый Claude, качество выше Qwen Flash.</div></td>
+    <td class="num">$1/$5</td>
+    <td class="num">$0.012/бой</td>
+    <td class="num hi">$5.04</td>
+    <td class="num">$10.08</td>
+  </tr><tr>
+    <td class="mname">Claude Sonnet 4.x (API)<div class="mnote">Pay-as-you-go. Премиум-качество и стабильность.</div></td>
+    <td class="num">$3/$15</td>
+    <td class="num">$0.036/бой</td>
+    <td class="num hi">$15.12</td>
+    <td class="num">$30.24</td>
+  </tr><tr>
+    <td class="mname">Claude Max (20×) — подписка<div class="mnote">⚠️ Подписка Max привязана к Claude.ai/Claude Code и НЕ доступна по API для внешнего приложения. Для арены технически не подходит; цена дана как «если бы». Плюс лимиты использования.</div></td>
+    <td class="num">$200/мес</td>
+    <td class="num">$200.00/мес</td>
+    <td class="num hi">$400.00</td>
+    <td class="num">$400.00</td>
+  </tr></tbody>
+</table>
+
+<h2>Вывод и рекомендация</h2>
+<div class="rec">
+  <b>Токены здесь почти ничего не стоят.</b> Даже флагманская Qwen3-235B обходится в единицы долларов
+  за оба мероприятия, а Qwen Flash / DeepSeek — в районе <b>$0.3–1.5</b> суммарно. Узкое место — не деньги,
+  а скорость и стабильность.
+  <ul>
+    <li><b>Оптимум:</b> бойцы на <b>Qwen Flash</b> или <b>DeepSeek V3.2</b>, судья и финал — на <b>DeepSeek/Qwen3-235B</b> (он арбитр, важно качество). Итог: <b>$1–3</b> за обе конференции.</li>
+    <li><b>Премиум-вариант:</b> всё на Claude Sonnet API — стабильно и качественно, всё равно лишь <b>~$15–30</b> суммарно (pay-as-you-go).</li>
+    <li><b>Закладывай платный фоллбэк</b> в любом случае: один прайм-тайм на 3000 гостей убьёт бесплатные лимиты.</li>
+  </ul>
+</div>
+<div class="warn">
+  <b>Про «Claude Max подписку»:</b> тариф Max (≈$200/мес) рассчитан на работу в Claude.ai и Claude Code и
+  <b>не предоставляет API-ключ для внешнего веб-приложения</b> — для арены он технически непригоден. Вдобавок
+  $200–400 — это в 10–100 раз дороже, чем pay-as-you-go под нашу нагрузку. Подписку брать не нужно.
+</div>
+
+<div class="foot">
+  Допущения по токенам — из механики боя и реальных замеров теста test-fight-integrity. Цены OpenRouter — live из API на дату выше;
+  Claude — публичный прайс (Haiku 4.5 $1/$5, Sonnet 4.x $3/$15, Max 20× ≈ $200/мес). Фактический расход ±20–30% в зависимости от длины персон и настроек памяти бойцов.
+</div>
+
+</body></html>
