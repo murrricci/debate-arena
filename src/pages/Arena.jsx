@@ -160,6 +160,7 @@ export default function Arena() {
     // Тайминг боя: общее «настенное» время против чистого времени в LLM (остальное — паузы UX).
     const fightStart = performance.now();
     let llmMs = 0;
+    let fightCost = 0; // ₽, суммарная стоимость боя из usage.cost_rub ответов
 
     try {
       for (let r = 1; r <= ROUNDS; r++) {
@@ -178,6 +179,7 @@ export default function Arena() {
           { maxTokens: budget(wordsA), tier: mA.tier, temperature: tempA, label: `R${r}·A` }
         );
         llmMs += resA.ms || 0;
+        fightCost += resA.usage?.cost_rub || 0;
         const replyA = clampReply(resA.text, wordsA);
         tokA += resA.usage?.total_tokens || 0;
         if (resA.model) setModelA(resA.model);
@@ -198,6 +200,7 @@ export default function Arena() {
           { maxTokens: budget(wordsB), tier: mB.tier, temperature: tempB, label: `R${r}·B` }
         );
         llmMs += resB.ms || 0;
+        fightCost += resB.usage?.cost_rub || 0;
         const replyB = clampReply(resB.text, wordsB);
         tokB += resB.usage?.total_tokens || 0;
         if (resB.model) setModelB(resB.model);
@@ -215,9 +218,10 @@ export default function Arena() {
               content: `Тема: ${topic.title}\n\nБОЕЦ A (${A.name}) защищает: «${stanceA}»\nA сказал: "${replyA}"\n\nБОЕЦ B (${B.name}) защищает: «${stanceB}»\nB сказал: "${replyB}"`,
             },
           ],
-          { json: true, maxTokens: 300, tier: 0, label: `R${r}·судья` }
+          { json: true, maxTokens: 300, judge: true, label: `R${r}·судья` }
         );
         llmMs += judgeRes.ms || 0;
+        fightCost += judgeRes.usage?.cost_rub || 0;
         const judgement = judgeRes.parsed;
         lastJudgement = judgement; // отдадим бойцам в следующем раунде (если включена опция)
 
@@ -240,9 +244,10 @@ export default function Arena() {
       const finalRes = await callClaude(
         finalJudgeSystem(),
         [{ role: "user", content: `Тема: ${topic.title}\nA (${A.name}): «${stanceA}»\nB (${B.name}): «${stanceB}»\n\n${full}` }],
-        { json: true, maxTokens: 300, tier: 0, label: "финал" }
+        { json: true, maxTokens: 300, judge: true, label: "финал" }
       );
       llmMs += finalRes.ms || 0;
+      fightCost += finalRes.usage?.cost_rub || 0;
       const final = finalRes.parsed;
 
       // Тай-брейк по остаткам HP, если судья поставил равный счёт.
@@ -256,7 +261,7 @@ export default function Arena() {
       // Итог по таймингу: сколько ушло на провайдера, а сколько — на паузы интерфейса.
       const wallMs = Math.round(performance.now() - fightStart);
       const llm = Math.round(llmMs);
-      console.log(`[БОЙ] всего ${wallMs}мс · LLM ${llm}мс (${Math.round((llm / wallMs) * 100)}%) · паузы UX ${wallMs - llm}мс`);
+      console.log(`[БОЙ] всего ${wallMs}мс · LLM ${llm}мс (${Math.round((llm / wallMs) * 100)}%) · паузы UX ${wallMs - llm}мс · ₽${fightCost.toFixed(2)}`);
 
       // Начисляем очки в зачёт (для турнирной таблицы и разминочного рейтинга).
       applyResult({ aId: A.id, bId: B.id, winner, scoreA: final.score_a, scoreB: final.score_b });

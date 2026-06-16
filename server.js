@@ -35,6 +35,11 @@ const TIERS = [
   parseList(process.env.LLM_TIER_3, ["openai/gpt-oss-20b:free"]),
 ];
 
+// Отдельный тир судьи — НЕ часть лестницы деградации бойцов: судья всегда арбитр, его модель
+// задаётся независимо через LLM_TIER_JUDGE (список через запятую: первая основная, остальные —
+// его фоллбэки этого тира). Не задано → как раньше: модели тира 1 (PRIME).
+const JUDGE_TIER = parseList(process.env.LLM_TIER_JUDGE, TIERS[0]);
+
 // Общий «последний рубеж»: пробуется, когда весь список выбранного тира недоступен.
 // Список берётся ТОЛЬКО из LLM_FALLBACKS (через запятую). Пусто или не задано → без фоллбэков:
 // никаких зашитых дефолтов, что в конфиге — то и есть (пустой конфиг = ничего лишнего не пробуем).
@@ -42,19 +47,46 @@ const FALLBACKS = parseList(process.env.LLM_FALLBACKS, []);
 
 // Уровень «рассуждения» reasoning-моделей. У них max_tokens делится между скрытым reasoning и
 // ответом: при низком лимите reasoning съедает весь бюджет, и content приходит ПУСТЫМ. Поэтому
-// по умолчанию reasoning выключен (весь лимит идёт на ответ). LLM_REASONING_EFFORT: low|medium|high
-// (доля бюджета на reasoning), none/off (выключить вовсе), пусто (не слать параметр — для хостов без поддержки).
-const REASONING = (() => {
-  const v = (process.env.LLM_REASONING_EFFORT ?? "off").trim().toLowerCase();
+// по умолчанию reasoning выключен (весь лимит идёт на ответ). Значения: low|medium|high (доля
+// бюджета на reasoning), none/off (выключить вовсе), пусто (не слать параметр — для хостов без поддержки).
+const parseEffort = (raw, who) => {
+  const v = (raw ?? "").trim().toLowerCase();
   if (v === "" || v === "default") return null; // не добавлять поле reasoning в запрос
   if (v === "none" || v === "off" || v === "false") return { enabled: false };
   if (["low", "medium", "high"].includes(v)) return { effort: v };
-  console.warn(`⚠️  LLM_REASONING_EFFORT="${v}" не распознан — выключаю reasoning ("off")`);
+  console.warn(`⚠️  reasoning "${v}" (${who}) не распознан — выключаю reasoning ("off")`);
   return { enabled: false };
+};
+// Глобальный reasoning (бойцы и всё, что не судья). По умолчанию off.
+const REASONING = parseEffort(process.env.LLM_REASONING_EFFORT ?? "off", "LLM_REASONING_EFFORT");
+// Reasoning судьи. Своя ручка LLM_REASONING_EFFORT_JUDGE; если не задана — наследует глобальный.
+const REASONING_JUDGE = process.env.LLM_REASONING_EFFORT_JUDGE == null
+  ? REASONING
+  : parseEffort(process.env.LLM_REASONING_EFFORT_JUDGE, "LLM_REASONING_EFFORT_JUDGE");
+
+// Лимит токенов ответа судьи. Не задано → берётся max_tokens из запроса (фронт шлёт 300).
+// Полезно поднять, если у судьи включён reasoning (иначе рассуждение съест лимит → пустой вердикт).
+const JUDGE_MAX_TOKENS = (() => {
+  const n = Number(process.env.LLM_MAX_TOKENS_JUDGE);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : null;
 })();
 
+// Случайный выбор модели внутри тира. По умолчанию выкл — модели тира пробуются по порядку
+// (первая основная, остальные фоллбэки). LLM_TIER_RANDOM=1 → порядок моделей тира тасуется на
+// каждый запрос: «основной» становится случайная модель тира, остальные остаются его фоллбэками.
+// Глобальный LLM_FALLBACKS не тасуется; явно переданный model (back-compat) тоже не трогаем.
+const RANDOM_TIER = /^(1|true|on|yes)$/i.test((process.env.LLM_TIER_RANDOM ?? "").trim());
+const shuffle = (arr) => {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+};
+
 const MAX_RETRIES = 3; // попыток на каждую модель
-const RETRY_STATUSES = new Set([429, 502, 503, 500]);
+const RETRY_STATUSES = new Set([400, 429, 502, 503, 500]);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // Логирование тайминга обращений к провайдеру. По умолчанию включено; LLM_LOG=0 — выключить.
@@ -92,7 +124,7 @@ if (!API_KEY) {
 // Один запрос к конкретной модели с ретраями на временных ошибках провайдера.
 // Возвращает, помимо результата, attempts (сколько попыток сделали) и slept (мс в бэкоффе) —
 // чтобы вышестоящий обработчик мог отделить ожидание от реальной работы провайдера.
-async function callModel(model, chatMessages, max_tokens, temperature = 0.8) {
+async function callModel(model, chatMessages, max_tokens, temperature = 0.8, reasoning = null) {
   let lastErr = null;
   let slept = 0; // суммарное время ожидания между попытками по этой модели
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
@@ -107,7 +139,7 @@ async function callModel(model, chatMessages, max_tokens, temperature = 0.8) {
           "HTTP-Referer": "http://localhost:5173",
           "X-Title": "Debate Arena",
         },
-        body: JSON.stringify({ model, messages: chatMessages, max_tokens, temperature, ...(REASONING ? { reasoning: REASONING } : {}) }),
+        body: JSON.stringify({ model, messages: chatMessages, max_tokens, temperature, ...(reasoning ? { reasoning } : {}) }),
       });
     } catch (e) {
       tlog(`   ↳ ${model} #${attempt}: сеть упала за ${since(t0)}мс — ${e.message}`);
@@ -124,7 +156,8 @@ async function callModel(model, chatMessages, max_tokens, temperature = 0.8) {
       const text = (data.choices?.[0]?.message?.content || "").trim();
       if (text) {
         tlog(`   ↳ ${model} #${attempt}: 200 за ${dt}мс, токенов ${data.usage?.total_tokens ?? "?"}`);
-        return { ok: true, text, usage: data.usage, attempts: attempt, slept };
+        // respModel — имя модели из ответа провайдера (что реально отработало и было оплачено).
+        return { ok: true, text, usage: data.usage, respModel: data.model, attempts: attempt, slept };
       }
       tlog(`   ↳ ${model} #${attempt}: 200 за ${dt}мс, но ответ пустой`);
       lastErr = { status: 502, message: "пустой ответ модели" };
@@ -155,21 +188,28 @@ app.post("/api/claude", async (req, res) => {
     return res.status(500).json({ error: "Ключ сервиса (LLM_API_KEY / OPENROUTER_API_KEY) не настроен на сервере" });
   }
   // label — необязательная метка вызова (напр. «R2·A»), приходит с фронта только для логов.
-  const { system, messages, max_tokens = 1000, model, tier, temperature, label } = req.body || {};
+  // judge:true — это судья: идёт на отдельный тир (JUDGE_TIER) и со своим reasoning.
+  const { system, messages, max_tokens = 1000, model, tier, temperature, label, judge } = req.body || {};
   if (!Array.isArray(messages)) {
     return res.status(400).json({ error: "messages обязателен и должен быть массивом" });
   }
 
   const chatMessages = system ? [{ role: "system", content: system }, ...messages] : messages;
-  // Тир → список моделей; явный model (строка) имеет приоритет (back-compat).
+  // Судья → свой тир и свой reasoning; остальные — тир по индексу и глобальный reasoning.
   const t = Number.isInteger(tier) ? Math.min(Math.max(tier, 0), TIERS.length - 1) : 0;
-  const base = typeof model === "string" && model.trim() ? [model.trim()] : TIERS[t];
+  const list = judge ? JUDGE_TIER : TIERS[t];
+  const reasoning = judge ? REASONING_JUDGE : REASONING;
+  // Лимит токенов: у судьи можно задать свой (LLM_MAX_TOKENS_JUDGE), иначе берётся из запроса.
+  const effMax = judge && JUDGE_MAX_TOKENS ? JUDGE_MAX_TOKENS : max_tokens;
+  // Тир → список моделей; явный model (строка) имеет приоритет (back-compat).
+  const base = typeof model === "string" && model.trim() ? [model.trim()] : (RANDOM_TIER ? shuffle(list) : list);
   // Цепочка: модели тира по порядку, затем общий фоллбэк; дубли убираем.
   const chain = [...new Set([...base, ...FALLBACKS])];
 
   const reqStart = Date.now();
   const tag = label || "—";
-  tlog(`\n🛰️  [${tag}] тир ${t + 1}, max_tokens=${max_tokens}, цепочка: ${chain.join(" → ")}`);
+  const where = judge ? "судья" : `тир ${t + 1}`;
+  tlog(`\n🛰️  [${tag}] ${where}, reasoning=${reasoning ? JSON.stringify(reasoning) : "—"}, max_tokens=${effMax}, цепочка: ${chain.join(" → ")}`);
 
   let last = null;
   let triedModels = 0; // сколько моделей цепочки перебрали
@@ -177,22 +217,26 @@ app.post("/api/claude", async (req, res) => {
   let totalSlept = 0; // суммарно мс, проведённых в бэкоффе
   for (const m of chain) {
     triedModels++;
-    const result = await callModel(m, chatMessages, max_tokens, temperature);
+    const result = await callModel(m, chatMessages, effMax, temperature, reasoning);
     totalAttempts += result.attempts || 0;
     totalSlept += result.slept || 0;
     if (result.ok) {
       const total = since(reqStart);
-      if (m !== chain[0]) console.warn(`↪️  Фоллбэк: ответила модель ${m}`);
+      const answered = result.respModel || m; // имя модели из ответа (для точного учёта по модели)
+      if (m !== chain[0]) console.warn(`↪️  Фоллбэк: ответила модель ${answered}`);
       // Ключевая строка диагностики: total = работа провайдера + ожидание (totalSlept).
-      tlog(`✅  [${tag}] ${m} за ${total}мс · моделей ${triedModels}, попыток ${totalAttempts}, в ожидании ${totalSlept}мс, токенов ${result.usage?.total_tokens ?? "?"}`);
+      tlog(`✅  [${tag}] ${answered} за ${total}мс · моделей ${triedModels}, попыток ${totalAttempts}, в ожидании ${totalSlept}мс, токенов ${result.usage?.total_tokens ?? "?"} (reasoning ${result.usage?.completion_tokens_details?.reasoning_tokens ?? "?"}), ₽${result.usage?.cost_rub ?? "?"}, остаток ₽${result.usage?.balance ?? "?"}`);
       logToFile({
-        ts: new Date().toISOString(), label: label || null, tier: t, ok: true, model: m,
-        ms: total, sleptMs: totalSlept, attempts: totalAttempts, modelsTried: triedModels, max_tokens,
+        ts: new Date().toISOString(), label: label || null, tier: t, judge: !!judge, ok: true, model: answered,
+        ms: total, sleptMs: totalSlept, attempts: totalAttempts, modelsTried: triedModels, max_tokens: effMax,
         prompt_tokens: result.usage?.prompt_tokens ?? null,
         completion_tokens: result.usage?.completion_tokens ?? null,
+        reasoning_tokens: result.usage?.completion_tokens_details?.reasoning_tokens ?? null, // часть выхода на reasoning
         total_tokens: result.usage?.total_tokens ?? null,
+        cost_rub: result.usage?.cost_rub ?? null, // AITunnel: сумма запроса в рублях (из usage ответа)
+        balance: result.usage?.balance ?? null,   // остаток на счёте после запроса (₽)
       });
-      return res.json({ text: result.text, usage: result.usage, model: m });
+      return res.json({ text: result.text, usage: result.usage, model: answered });
     }
     last = result;
     console.error(`Модель ${m} не ответила (${result.status}): ${result.message}`);
@@ -201,8 +245,8 @@ app.post("/api/claude", async (req, res) => {
   const failMs = since(reqStart);
   tlog(`❌  [${tag}] все модели легли за ${failMs}мс · моделей ${triedModels}, попыток ${totalAttempts}, в ожидании ${totalSlept}мс`);
   logToFile({
-    ts: new Date().toISOString(), label: label || null, tier: t, ok: false, model: null,
-    ms: failMs, sleptMs: totalSlept, attempts: totalAttempts, modelsTried: triedModels, max_tokens,
+    ts: new Date().toISOString(), label: label || null, tier: t, judge: !!judge, ok: false, model: null,
+    ms: failMs, sleptMs: totalSlept, attempts: totalAttempts, modelsTried: triedModels, max_tokens: effMax,
     status: last?.status || 502, error: last?.message || "неизвестно",
   });
   res.status(last?.status || 502).json({
@@ -218,8 +262,12 @@ app.listen(PORT, () => {
   console.log(`\n🥊  Debate Arena backend на http://localhost:${PORT}`);
   console.log(`   сервис: ${BASE_URL}`);
   TIERS.forEach((list, i) => console.log(`   тир ${i + 1}: ${list.join(", ")}`));
+  console.log(`   тир судьи: ${JUDGE_TIER.join(", ")}`);
   console.log(`   фоллбэки: ${FALLBACKS.join(", ") || "—"}`);
   console.log(`   reasoning: ${REASONING ? JSON.stringify(REASONING) : "по умолчанию модели"}`);
+  console.log(`   reasoning судьи: ${REASONING_JUDGE ? JSON.stringify(REASONING_JUDGE) : "по умолчанию модели"}`);
+  console.log(`   лимит токенов судьи: ${JUDGE_MAX_TOKENS ?? "из запроса (фронт: 300)"}`);
+  console.log(`   выбор в тире: ${RANDOM_TIER ? "случайный (LLM_TIER_RANDOM)" : "по порядку"}`);
   console.log(`   тайминг-логи: ${LOG ? "вкл (LLM_LOG=0 чтобы выключить)" : "выкл"}`);
   console.log(`   лог-файл: ${LOG_FILE || "выкл (LLM_LOG_FILE=0)"}\n`);
 });

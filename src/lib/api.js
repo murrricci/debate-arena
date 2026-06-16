@@ -1,13 +1,13 @@
 // Тонкий клиент к нашему бэкенду-прокси (/api/claude).
 // Возвращает { text, parsed, usage, model }. parsed заполняется при json:true.
 // `tier` — индекс ступени деградации; бэкенд по нему выбирает список моделей.
-export async function callClaude(system, messages, { json = false, maxTokens = 1000, model, tier, temperature, label } = {}) {
+export async function callClaude(system, messages, { json = false, maxTokens = 1000, model, tier, temperature, label, judge } = {}) {
   // Засекаем round-trip до прокси (а прокси уже логирует ретраи/фоллбэки у себя).
   const t0 = performance.now();
   const res = await fetch("/api/claude", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ system, messages, max_tokens: maxTokens, model, tier, temperature, label }),
+    body: JSON.stringify({ system, messages, max_tokens: maxTokens, model, tier, temperature, label, judge }),
   });
   const data = await res.json();
   if (!res.ok) {
@@ -25,7 +25,7 @@ export async function callClaude(system, messages, { json = false, maxTokens = 1
     parsed = JSON.parse(raw);
   }
   const ms = Math.round(performance.now() - t0);
-  console.log(`[LLM ${label || "—"}] ${ms}мс · ${data.model || "?"} · токенов ${data.usage?.total_tokens ?? "?"}`);
+  console.log(`[LLM ${label || "—"}] ${ms}мс · ${data.model || "?"} · токенов ${data.usage?.total_tokens ?? "?"} · ₽${data.usage?.cost_rub ?? "?"}`);
   return { text, parsed, usage: data.usage, model: data.model, ms };
 }
 
