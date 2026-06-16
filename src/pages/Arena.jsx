@@ -157,6 +157,9 @@ export default function Arena() {
     let tokB = 0;
     // Оценка судьи прошлого раунда — отдаём её бойцам, если включена опция «Учитывать судью».
     let lastJudgement = null;
+    // Тайминг боя: общее «настенное» время против чистого времени в LLM (остальное — паузы UX).
+    const fightStart = performance.now();
+    let llmMs = 0;
 
     try {
       for (let r = 1; r <= ROUNDS; r++) {
@@ -172,8 +175,9 @@ export default function Arena() {
         const resA = await callClaude(
           sysA,
           [...histA, { role: "user", content: [fbA, instrA].filter(Boolean).join("\n\n") }],
-          { maxTokens: budget(wordsA), tier: mA.tier, temperature: tempA }
+          { maxTokens: budget(wordsA), tier: mA.tier, temperature: tempA, label: `R${r}·A` }
         );
+        llmMs += resA.ms || 0;
         const replyA = clampReply(resA.text, wordsA);
         tokA += resA.usage?.total_tokens || 0;
         if (resA.model) setModelA(resA.model);
@@ -191,8 +195,9 @@ export default function Arena() {
         const resB = await callClaude(
           sysB,
           [...histB, { role: "user", content: [fbB, instrB].filter(Boolean).join("\n\n") }],
-          { maxTokens: budget(wordsB), tier: mB.tier, temperature: tempB }
+          { maxTokens: budget(wordsB), tier: mB.tier, temperature: tempB, label: `R${r}·B` }
         );
+        llmMs += resB.ms || 0;
         const replyB = clampReply(resB.text, wordsB);
         tokB += resB.usage?.total_tokens || 0;
         if (resB.model) setModelB(resB.model);
@@ -210,8 +215,9 @@ export default function Arena() {
               content: `Тема: ${topic.title}\n\nБОЕЦ A (${A.name}) защищает: «${stanceA}»\nA сказал: "${replyA}"\n\nБОЕЦ B (${B.name}) защищает: «${stanceB}»\nB сказал: "${replyB}"`,
             },
           ],
-          { json: true, maxTokens: 300, tier: 0 }
+          { json: true, maxTokens: 300, tier: 0, label: `R${r}·судья` }
         );
+        llmMs += judgeRes.ms || 0;
         const judgement = judgeRes.parsed;
         lastJudgement = judgement; // отдадим бойцам в следующем раунде (если включена опция)
 
@@ -234,8 +240,9 @@ export default function Arena() {
       const finalRes = await callClaude(
         finalJudgeSystem(),
         [{ role: "user", content: `Тема: ${topic.title}\nA (${A.name}): «${stanceA}»\nB (${B.name}): «${stanceB}»\n\n${full}` }],
-        { json: true, maxTokens: 300, tier: 0 }
+        { json: true, maxTokens: 300, tier: 0, label: "финал" }
       );
+      llmMs += finalRes.ms || 0;
       const final = finalRes.parsed;
 
       // Тай-брейк по остаткам HP, если судья поставил равный счёт.
@@ -245,6 +252,11 @@ export default function Arena() {
       setVerdict({ ...final, winner, hpA: curHpA, hpB: curHpB });
       setStatus("");
       setPhase("verdict");
+
+      // Итог по таймингу: сколько ушло на провайдера, а сколько — на паузы интерфейса.
+      const wallMs = Math.round(performance.now() - fightStart);
+      const llm = Math.round(llmMs);
+      console.log(`[БОЙ] всего ${wallMs}мс · LLM ${llm}мс (${Math.round((llm / wallMs) * 100)}%) · паузы UX ${wallMs - llm}мс`);
 
       // Начисляем очки в зачёт (для турнирной таблицы и разминочного рейтинга).
       applyResult({ aId: A.id, bId: B.id, winner, scoreA: final.score_a, scoreB: final.score_b });
