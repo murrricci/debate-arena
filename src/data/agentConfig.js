@@ -8,6 +8,7 @@ export const DEFAULT_CONFIG = {
   temperature: 0.8, // характер: расчётливость ↔ хаос
   replyLen: "short", // длина реплики
   focus: "balanced", // тактика: атака / защита / баланс
+  useJudge: "off", // учитывать ли оценку судьи между раундами
 };
 
 // --- ПАМЯТЬ (контекст) ---
@@ -67,6 +68,14 @@ export const FOCUS_OPTIONS = [
   { id: "balanced", name: "Баланс", hint: "Поровну атаки и защиты." },
 ];
 
+// --- МНЕНИЕ СУДЬИ ---
+// Если включено — со 2-го раунда боец видит оценку судьи (баллы обоих + реплику) и
+// подстраивается под неё. Разбор судьи добавляет токенов на каждый ход → деградация ближе.
+export const JUDGE_OPTIONS = [
+  { id: "off", name: "Игнорировать", hint: "Боец не смотрит на оценку судьи — дешевле по токенам, дольше держит сильную модель." },
+  { id: "on", name: "Учитывать", hint: "Боец видит баллы судьи за прошлый раунд и адаптируется — умнее, но разбор жжёт токены и приближает деградацию." },
+];
+
 // ---- Хелперы ----
 export function getConfig(participant) {
   return { ...DEFAULT_CONFIG, ...(participant?.config || {}) };
@@ -86,6 +95,11 @@ export function memoryWindow(cfg, total) {
   if (cfg.memory === "last") return 1;
   if (cfg.memory === "all") return total;
   return cfg.windowSize ?? 3;
+}
+
+// Учитывает ли боец оценку судьи между раундами.
+export function usesJudge(cfg) {
+  return cfg.useJudge === "on";
 }
 
 // Текстовая добавка к промпту под выбранную тактику.

@@ -9,7 +9,7 @@ import { dirname, join } from "node:path";
 
 import { MODEL_TIERS, TIER_THRESHOLDS } from "../src/lib/models.js";
 import { CRITERIA } from "../src/data/judging.js";
-import { MEMORY_OPTIONS, TEMPERAMENT_OPTIONS, REPLY_LEN_OPTIONS, FOCUS_OPTIONS } from "../src/data/agentConfig.js";
+import { MEMORY_OPTIONS, TEMPERAMENT_OPTIONS, REPLY_LEN_OPTIONS, FOCUS_OPTIONS, JUDGE_OPTIONS } from "../src/data/agentConfig.js";
 import { SKILL_CARDS } from "../src/data/skills.js";
 
 const MAX_UPGRADES = 3;
@@ -62,6 +62,7 @@ cards.push(`
   <div class="param"><h3>🌡️ Температура (ползунок 0.1–1.5)</h3><ul>${li(TEMPERAMENT_OPTIONS.map((o) => `<b>${o.name}</b> — ${o.hint}`))}</ul></div>
   <div class="param"><h3>✍️ Длина реплики</h3><ul>${li(REPLY_LEN_OPTIONS.map((o) => `<b>${o.name} (~${o.words} сл.)</b> — ${o.hint}`))}</ul></div>
   <div class="param"><h3>🎯 Тактика</h3><ul>${li(FOCUS_OPTIONS.map((o) => `<b>${o.name}</b> — ${o.hint}`))}</ul></div>
+  <div class="param"><h3>🧑‍⚖️ Мнение судьи</h3><ul>${li(JUDGE_OPTIONS.map((o) => `<b>${o.name}</b> — ${o.hint}`))}</ul></div>
 </div>`);
 
 cards.push(`

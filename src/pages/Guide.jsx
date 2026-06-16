@@ -2,7 +2,7 @@ import React from "react";
 import { styles, C } from "../styles.js";
 import { MODEL_TIERS, TIER_THRESHOLDS } from "../lib/models.js";
 import { CRITERIA } from "../data/judging.js";
-import { MEMORY_OPTIONS, TEMPERAMENT_OPTIONS, REPLY_LEN_OPTIONS, FOCUS_OPTIONS } from "../data/agentConfig.js";
+import { MEMORY_OPTIONS, TEMPERAMENT_OPTIONS, REPLY_LEN_OPTIONS, FOCUS_OPTIONS, JUDGE_OPTIONS } from "../data/agentConfig.js";
 import { SKILL_CARDS } from "../data/skills.js";
 import { MAX_UPGRADES } from "../lib/store.js";
 import { TOP_N } from "../lib/tournament.js";
@@ -71,6 +71,7 @@ export default function Guide() {
         <Param title="🌡️ Температура (ползунок 0.1–1.5)" items={TEMPERAMENT_OPTIONS.map((o) => [o.name, o.hint])} />
         <Param title="✍️ Длина реплики" items={REPLY_LEN_OPTIONS.map((o) => [`${o.name} (~${o.words} слов)`, o.hint])} />
         <Param title="🎯 Тактика" items={FOCUS_OPTIONS.map((o) => [o.name, o.hint])} />
+        <Param title="🧑‍⚖️ Мнение судьи" items={JUDGE_OPTIONS.map((o) => [o.name, o.hint])} />
       </Section>
 
       <Section title="⚖️ Как судит ИИ-судья">

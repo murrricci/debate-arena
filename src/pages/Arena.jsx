@@ -6,9 +6,9 @@ import { buildFighterSystem, fighterFace, fighterColor } from "../lib/agent.js";
 import { callClaude } from "../lib/api.js";
 import { publish, subscribe } from "../lib/bus.js";
 import { TOPICS, randomTopic } from "../data/topics.js";
-import { roundJudgeSystem, finalJudgeSystem, roundDamage, CRITERIA } from "../data/judging.js";
+import { roundJudgeSystem, finalJudgeSystem, roundDamage, judgeFeedbackMessage, CRITERIA } from "../data/judging.js";
 import { pickModel, MODEL_TIERS } from "../lib/models.js";
-import { getConfig, replyWords, temperatureValue, memoryWindow } from "../data/agentConfig.js";
+import { getConfig, replyWords, temperatureValue, memoryWindow, usesJudge } from "../data/agentConfig.js";
 import { pickSprite } from "../data/sprites.js";
 import PixelFighter from "../components/PixelFighter.jsx";
 import PixelArena from "../components/PixelArena.jsx";
@@ -145,6 +145,8 @@ export default function Arena() {
     const wordsB = replyWords(cfgB);
     const tempA = temperatureValue(cfgA);
     const tempB = temperatureValue(cfgB);
+    const useJudgeA = usesJudge(cfgA);
+    const useJudgeB = usesJudge(cfgB);
     const budget = (w) => Math.max(180, Math.round(w * 7)); // токен-бюджет под длину реплики
 
     const transcript = [];
@@ -153,6 +155,8 @@ export default function Arena() {
     // Накопленный расход токенов каждого бойца → определяет текущую модель (деградация).
     let tokA = 0;
     let tokB = 0;
+    // Оценка судьи прошлого раунда — отдаём её бойцам, если включена опция «Учитывать судью».
+    let lastJudgement = null;
 
     try {
       for (let r = 1; r <= ROUNDS; r++) {
@@ -163,9 +167,11 @@ export default function Arena() {
         setTierA(mA);
         setStatus(`${A.name} атакует… [${mA.label}]`);
         const histA = historyFor("A", transcript, memoryWindow(cfgA, transcript.length));
+        const instrA = r === 1 ? "Открой дебаты своим сильнейшим аргументом." : "Парируй оппонента и нанеси новый удар.";
+        const fbA = r > 1 && useJudgeA ? judgeFeedbackMessage("A", lastJudgement) : "";
         const resA = await callClaude(
           sysA,
-          [...histA, { role: "user", content: r === 1 ? "Открой дебаты своим сильнейшим аргументом." : "Парируй оппонента и нанеси новый удар." }],
+          [...histA, { role: "user", content: [fbA, instrA].filter(Boolean).join("\n\n") }],
           { maxTokens: budget(wordsA), tier: mA.tier, temperature: tempA }
         );
         const replyA = clampReply(resA.text, wordsA);
@@ -180,9 +186,11 @@ export default function Arena() {
         setTierB(mB);
         setStatus(`${B.name} отвечает… [${mB.label}]`);
         const histB = historyFor("B", transcript, memoryWindow(cfgB, transcript.length));
+        const instrB = "Разбей это и ударь в ответ.";
+        const fbB = r > 1 && useJudgeB ? judgeFeedbackMessage("B", lastJudgement) : "";
         const resB = await callClaude(
           sysB,
-          [...histB, { role: "user", content: "Разбей это и ударь в ответ." }],
+          [...histB, { role: "user", content: [fbB, instrB].filter(Boolean).join("\n\n") }],
           { maxTokens: budget(wordsB), tier: mB.tier, temperature: tempB }
         );
         const replyB = clampReply(resB.text, wordsB);
@@ -205,6 +213,7 @@ export default function Arena() {
           { json: true, maxTokens: 300, tier: 0 }
         );
         const judgement = judgeRes.parsed;
+        lastJudgement = judgement; // отдадим бойцам в следующем раунде (если включена опция)
 
         const { damageToA, damageToB } = roundDamage(judgement);
         curHpA = Math.max(0, curHpA - damageToA);
