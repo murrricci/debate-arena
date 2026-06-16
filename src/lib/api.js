@@ -1,10 +1,11 @@
 // Тонкий клиент к нашему бэкенду-прокси (/api/claude).
 // Возвращает { text, parsed, usage, model }. parsed заполняется при json:true.
-export async function callClaude(system, messages, { json = false, maxTokens = 1000, model, temperature } = {}) {
+// `tier` — индекс ступени деградации; бэкенд по нему выбирает список моделей.
+export async function callClaude(system, messages, { json = false, maxTokens = 1000, model, tier, temperature } = {}) {
   const res = await fetch("/api/claude", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ system, messages, max_tokens: maxTokens, model, temperature }),
+    body: JSON.stringify({ system, messages, max_tokens: maxTokens, model, tier, temperature }),
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data?.error || "Ошибка запроса к модели");

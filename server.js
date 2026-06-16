@@ -9,17 +9,34 @@ app.use(cors());
 app.use(express.json({ limit: "1mb" }));
 
 const PORT = process.env.PORT || 3001;
-const MODEL = process.env.LLM_MODEL || "openai/gpt-oss-120b:free";
-const API_KEY = process.env.OPENROUTER_API_KEY;
-const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
+const API_KEY = process.env.LLM_API_KEY || process.env.OPENROUTER_API_KEY;
+// База OpenAI-совместимого сервиса (до /v1). По умолчанию — OpenRouter; можно
+// указать любой хост через LLM_BASE_URL. Эндпоинт /chat/completions добавляем сами.
+const BASE_URL = (process.env.LLM_BASE_URL || "https://openrouter.ai/api/v1").replace(/\/+$/, "");
+const CHAT_URL = `${BASE_URL}/chat/completions`;
 
-// Запасные модели: если основная перегружена/недоступна — пробуем по очереди их.
+// Список моделей из переменной окружения: "a, b, c" → ["a","b","c"]. Пусто → defaults.
+const parseList = (envStr, defaults) => {
+  const list = (envStr || "").split(",").map((s) => s.trim()).filter(Boolean);
+  return list.length ? list : defaults;
+};
+
+// Модели по тирам деградации (LLM_TIER_1 — сильнейший, PRIME). В каждом тире первая
+// модель — основная, остальные — фоллбэки этого тира. Фронт шлёт индекс тира, а какие
+// модели за ним стоят — знает только бэкенд. Дефолты повторяют прежнее поведение;
+// LLM_MODEL оставлен как legacy-имя основной модели тира 1.
+const TIERS = [
+  parseList(process.env.LLM_TIER_1, [process.env.LLM_MODEL || "openai/gpt-oss-120b:free"]),
+  parseList(process.env.LLM_TIER_2, ["meta-llama/llama-3.3-70b-instruct:free"]),
+  parseList(process.env.LLM_TIER_3, ["openai/gpt-oss-20b:free"]),
+];
+
+// Общий «последний рубеж»: пробуется, когда весь список выбранного тира недоступен.
 // Можно переопределить через LLM_FALLBACKS (через запятую) в .env.
-const FALLBACKS = (process.env.LLM_FALLBACKS ||
-  "qwen/qwen3-next-80b-a3b-instruct:free,meta-llama/llama-3.3-70b-instruct:free,openai/gpt-oss-20b:free")
-  .split(",")
-  .map((s) => s.trim())
-  .filter(Boolean);
+const FALLBACKS = parseList(
+  process.env.LLM_FALLBACKS,
+  ["qwen/qwen3-next-80b-a3b-instruct:free", "meta-llama/llama-3.3-70b-instruct:free", "openai/gpt-oss-20b:free"]
+);
 
 const MAX_RETRIES = 3; // попыток на каждую модель
 const RETRY_STATUSES = new Set([429, 502, 503, 500]);
@@ -27,7 +44,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 if (!API_KEY) {
   console.warn(
-    "\n⚠️  OPENROUTER_API_KEY не задан. Скопируй .env.example в .env и впиши ключ.\n"
+    "\n⚠️  Ключ сервиса не задан (LLM_API_KEY / OPENROUTER_API_KEY). Скопируй .env.example в .env и впиши ключ.\n"
   );
 }
 
@@ -37,7 +54,7 @@ async function callModel(model, chatMessages, max_tokens, temperature = 0.8) {
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     let upstream;
     try {
-      upstream = await fetch(OPENROUTER_URL, {
+      upstream = await fetch(CHAT_URL, {
         method: "POST",
         headers: {
           "content-type": "application/json",
@@ -72,20 +89,24 @@ async function callModel(model, chatMessages, max_tokens, temperature = 0.8) {
   return { ok: false, ...lastErr };
 }
 
-// Единая точка обращения к модели. Фронт шлёт {system, messages, max_tokens}.
-// Бэкенд приводит к OpenAI-формату (system первым сообщением), пробует основную модель,
-// затем фоллбэки, и только если всё легло — отдаёт ошибку.
+// Единая точка обращения к модели. Фронт шлёт {system, messages, max_tokens, tier}.
+// Бэкенд приводит к OpenAI-формату (system первым сообщением), пробует модели списка
+// выбранного тира по очереди, затем общие фоллбэки, и только если всё легло — отдаёт ошибку.
 app.post("/api/claude", async (req, res) => {
   if (!API_KEY) {
-    return res.status(500).json({ error: "OPENROUTER_API_KEY не настроен на сервере" });
+    return res.status(500).json({ error: "Ключ сервиса (LLM_API_KEY / OPENROUTER_API_KEY) не настроен на сервере" });
   }
-  const { system, messages, max_tokens = 1000, model, temperature } = req.body || {};
+  const { system, messages, max_tokens = 1000, model, tier, temperature } = req.body || {};
   if (!Array.isArray(messages)) {
     return res.status(400).json({ error: "messages обязателен и должен быть массивом" });
   }
 
   const chatMessages = system ? [{ role: "system", content: system }, ...messages] : messages;
-  const chain = [model || MODEL, ...FALLBACKS.filter((m) => m !== (model || MODEL))];
+  // Тир → список моделей; явный model (строка) имеет приоритет (back-compat).
+  const t = Number.isInteger(tier) ? Math.min(Math.max(tier, 0), TIERS.length - 1) : 0;
+  const base = typeof model === "string" && model.trim() ? [model.trim()] : TIERS[t];
+  // Цепочка: модели тира по порядку, затем общий фоллбэк; дубли убираем.
+  const chain = [...new Set([...base, ...FALLBACKS])];
 
   let last = null;
   for (const m of chain) {
@@ -104,10 +125,12 @@ app.post("/api/claude", async (req, res) => {
 });
 
 app.get("/api/health", (_req, res) => {
-  res.json({ ok: true, model: MODEL, fallbacks: FALLBACKS, keyConfigured: Boolean(API_KEY) });
+  res.json({ ok: true, baseUrl: BASE_URL, tiers: TIERS, fallbacks: FALLBACKS, keyConfigured: Boolean(API_KEY) });
 });
 
 app.listen(PORT, () => {
-  console.log(`\n🥊  Debate Arena backend на http://localhost:${PORT}  (модель: ${MODEL})`);
+  console.log(`\n🥊  Debate Arena backend на http://localhost:${PORT}`);
+  console.log(`   сервис: ${BASE_URL}`);
+  TIERS.forEach((list, i) => console.log(`   тир ${i + 1}: ${list.join(", ")}`));
   console.log(`   фоллбэки: ${FALLBACKS.join(", ") || "—"}\n`);
 });

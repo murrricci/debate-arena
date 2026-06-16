@@ -47,9 +47,12 @@ export default function Arena() {
   const [verdict, setVerdict] = useState(null);
   const [shake, setShake] = useState(null);
   const [error, setError] = useState("");
-  // Текущая модель (тир) каждого бойца — деградирует по мере расхода токенов.
+  // Текущая ступень (тир) каждого бойца — деградирует по мере расхода токенов.
   const [tierA, setTierA] = useState(MODEL_TIERS[0]);
   const [tierB, setTierB] = useState(MODEL_TIERS[0]);
+  // Реально ответившая модель каждого бойца (для честного тултипа на бейдже).
+  const [modelA, setModelA] = useState("");
+  const [modelB, setModelB] = useState("");
   const [tour, setTour] = useState(getTournament());
   const logRef = useRef(null);
 
@@ -125,6 +128,8 @@ export default function Arena() {
     setVerdict(null);
     setTierA(MODEL_TIERS[0]);
     setTierB(MODEL_TIERS[0]);
+    setModelA("");
+    setModelB("");
 
     const colorA = fighterColor(A, C.red);
     const colorB = fighterColor(B, C.blue);
@@ -161,10 +166,11 @@ export default function Arena() {
         const resA = await callClaude(
           sysA,
           [...histA, { role: "user", content: r === 1 ? "Открой дебаты своим сильнейшим аргументом." : "Парируй оппонента и нанеси новый удар." }],
-          { maxTokens: budget(wordsA), model: mA.id, temperature: tempA }
+          { maxTokens: budget(wordsA), tier: mA.tier, temperature: tempA }
         );
         const replyA = clampReply(resA.text, wordsA);
         tokA += resA.usage?.total_tokens || 0;
+        if (resA.model) setModelA(resA.model);
         transcript.push({ side: "A", text: replyA });
         setLog((l) => [...l, { side: "A", name: A.name, face: faceA, color: colorA, text: replyA, round: r, tier: mA }]);
         await wait(700);
@@ -177,10 +183,11 @@ export default function Arena() {
         const resB = await callClaude(
           sysB,
           [...histB, { role: "user", content: "Разбей это и ударь в ответ." }],
-          { maxTokens: budget(wordsB), model: mB.id, temperature: tempB }
+          { maxTokens: budget(wordsB), tier: mB.tier, temperature: tempB }
         );
         const replyB = clampReply(resB.text, wordsB);
         tokB += resB.usage?.total_tokens || 0;
+        if (resB.model) setModelB(resB.model);
         transcript.push({ side: "B", text: replyB });
         setLog((l) => [...l, { side: "B", name: B.name, face: faceB, color: colorB, text: replyB, round: r, tier: mB }]);
         await wait(700);
@@ -195,7 +202,7 @@ export default function Arena() {
               content: `Тема: ${topic.title}\n\nБОЕЦ A (${A.name}) защищает: «${stanceA}»\nA сказал: "${replyA}"\n\nБОЕЦ B (${B.name}) защищает: «${stanceB}»\nB сказал: "${replyB}"`,
             },
           ],
-          { json: true, maxTokens: 300, model: MODEL_TIERS[0].id }
+          { json: true, maxTokens: 300, tier: 0 }
         );
         const judgement = judgeRes.parsed;
 
@@ -218,7 +225,7 @@ export default function Arena() {
       const finalRes = await callClaude(
         finalJudgeSystem(),
         [{ role: "user", content: `Тема: ${topic.title}\nA (${A.name}): «${stanceA}»\nB (${B.name}): «${stanceB}»\n\n${full}` }],
-        { json: true, maxTokens: 300, model: MODEL_TIERS[0].id }
+        { json: true, maxTokens: 300, tier: 0 }
       );
       const final = finalRes.parsed;
 
@@ -268,7 +275,7 @@ export default function Arena() {
 
   return (
     <Ring
-      {...{ A, B, hpA, hpB, log, round, status, shake, verdict, logRef, topic, stanceA, stanceB, tierA, tierB }}
+      {...{ A, B, hpA, hpB, log, round, status, shake, verdict, logRef, topic, stanceA, stanceB, tierA, tierB, modelA, modelB }}
       onRematch={() => { setPhase("select"); setVerdict(null); }}
     />
   );
@@ -461,7 +468,7 @@ function Versus({ A, B, stanceA, stanceB, topic }) {
 }
 
 /* ---------- Ринг ---------- */
-function Ring({ A, B, hpA, hpB, log, round, status, shake, verdict, logRef, topic, stanceA, stanceB, tierA, tierB, onRematch }) {
+function Ring({ A, B, hpA, hpB, log, round, status, shake, verdict, logRef, topic, stanceA, stanceB, tierA, tierB, modelA, modelB, onRematch }) {
   const colorA = fighterColor(A, C.red);
   const colorB = fighterColor(B, C.blue);
 
@@ -478,9 +485,9 @@ function Ring({ A, B, hpA, hpB, log, round, status, shake, verdict, logRef, topi
     <div className="fade-in">
       <div style={styles.topicBanner}>◆ {topic.title} ◆</div>
       <div style={styles.hpRow}>
-        <HpBar name={A.name} face={fighterFace(A)} color={colorA} hp={hpA} align="left" shaking={shake === "A"} tier={tierA} />
+        <HpBar name={A.name} face={fighterFace(A)} color={colorA} hp={hpA} align="left" shaking={shake === "A"} tier={tierA} model={modelA} />
         <div style={styles.roundBadge}>{verdict ? "ФИНАЛ" : `Р${round}/${ROUNDS}`}</div>
-        <HpBar name={B.name} face={fighterFace(B)} color={colorB} hp={hpB} align="right" shaking={shake === "B"} tier={tierB} />
+        <HpBar name={B.name} face={fighterFace(B)} color={colorB} hp={hpB} align="right" shaking={shake === "B"} tier={tierB} model={modelB} />
       </div>
 
       <div style={styles.pixelArena}>
@@ -536,13 +543,13 @@ function Ring({ A, B, hpA, hpB, log, round, status, shake, verdict, logRef, topi
   );
 }
 
-function HpBar({ name, face, color, hp, align, shaking, tier }) {
+function HpBar({ name, face, color, hp, align, shaking, tier, model }) {
   const right = align === "right";
   return (
     <div style={{ flex: 1, textAlign: align, animation: shaking ? "shake 0.4s" : "none" }}>
       <div style={{ ...styles.hpName, color, justifyContent: right ? "flex-end" : "flex-start", alignItems: "center" }}>
         {face} {name}
-        {tier && <TierBadge tier={tier} />}
+        {tier && <TierBadge tier={tier} model={model} />}
       </div>
       <div style={{ ...styles.hpTrack, direction: right ? "rtl" : "ltr" }}>
         <div style={{ ...styles.hpFill, width: `${hp}%`, background: hp > 50 ? C.green : hp > 25 ? C.yellow : C.danger }} />
@@ -552,11 +559,12 @@ function HpBar({ name, face, color, hp, align, shaking, tier }) {
   );
 }
 
-// Бейдж текущей модели бойца — подсвечивает деградацию (PRIME → WORN → FRIED).
-function TierBadge({ tier }) {
+// Бейдж текущей ступени бойца — подсвечивает деградацию (PRIME → WORN → FRIED).
+// В тултипе — реально ответившая модель (из ответа бэкенда), иначе имя ступени.
+function TierBadge({ tier, model }) {
   return (
     <span
-      title={tier.id}
+      title={model || tier.tag}
       style={{
         marginLeft: 8,
         padding: "1px 7px",

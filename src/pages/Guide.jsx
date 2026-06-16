@@ -51,7 +51,7 @@ export default function Guide() {
         </p>
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", margin: "12px 0" }}>
           {MODEL_TIERS.map((t, i) => (
-            <div key={t.id} style={{ ...tier, borderColor: t.color }}>
+            <div key={t.tag} style={{ ...tier, borderColor: t.color }}>
               <div style={{ color: t.color, fontWeight: 900 }}>🧠 {t.label} · {t.tag}</div>
               <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>
                 {i === 0 ? "старт боя" : `после ${TIER_THRESHOLDS[i - 1]} токенов`}

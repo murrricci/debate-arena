@@ -110,13 +110,23 @@ npm run dev                 # поднимет бэкенд (3001) и фронт
 - **Темы** — `src/data/topics.js` (заголовок + две позиции).
 - **Скилл-карточки** — `src/data/skills.js`.
 - **Критерии судейства и формула урона/очков** — `src/data/judging.js` и `src/lib/store.js`.
-- **Модель** — переменная `LLM_MODEL` в `.env` (по умолчанию `openai/gpt-oss-120b:free`).
-  Любая модель с [openrouter.ai/models](https://openrouter.ai/models).
+- **Модели по тирам** — переменные `LLM_TIER_1` / `LLM_TIER_2` / `LLM_TIER_3` в `.env`
+  (тир 1 — сильнейший, PRIME; тир 3 — слабейший, FRIED). Каждая — список моделей через
+  запятую: первая основная, остальные — фоллбэки этого тира. На запрос тира бэкенд
+  пробует модели списка по порядку; если весь список недоступен — берёт общий
+  `LLM_FALLBACKS`. Любая модель с [openrouter.ai/models](https://openrouter.ai/models)
+  (или другого хоста). `LLM_MODEL` оставлен как legacy-имя основной модели тира 1.
+  Проверить активную конфигурацию: `GET /api/health` → поля `tiers` / `fallbacks`.
+- **Сервис (хост)** — переменная `LLM_BASE_URL` в `.env` (по умолчанию
+  `https://openrouter.ai/api/v1`). Можно указать любой OpenAI-совместимый сервис —
+  например `https://api.openai.com/v1`, `https://api.proxyapi.ru/openai/v1` или свой
+  сервер. Ключ — `LLM_API_KEY` (старое имя `OPENROUTER_API_KEY` тоже работает).
+  Проверить активный хост: `GET /api/health` → поле `baseUrl`.
 
 > ⚠️ Бесплатные модели (`:free`) на OpenRouter жёстко лимитированы по частоте запросов
 > (нередко отдают `429`). Один бой = ~7 запросов к модели. Для стенда с потоком боёв
 > лучше пополнить баланс OpenRouter (от $10 поднимает дневной лимит) или указать
-> платную модель в `LLM_MODEL` — например `openai/gpt-4o-mini` или `anthropic/claude-3.5-haiku`.
+> платную модель в `LLM_TIER_1` — например `openai/gpt-4o-mini` или `anthropic/claude-3.5-haiku`.
 
 ## Как считаются очки
 

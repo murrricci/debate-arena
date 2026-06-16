@@ -20,11 +20,11 @@ const warn = (name, cond) => {
   else { warned++; console.log(`  ⚠️  ${name} (не критично)`); }
 };
 
-async function call(system, messages, { json = false, maxTokens = 220, model } = {}) {
+async function call(system, messages, { json = false, maxTokens = 220, tier } = {}) {
   const res = await fetch(`${BASE}/api/claude`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ system, messages, max_tokens: maxTokens, model }),
+    body: JSON.stringify({ system, messages, max_tokens: maxTokens, tier }),
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
@@ -86,19 +86,19 @@ async function run() {
     // A
     const mA = pickModel(tokA); tiersA.push(mA.label);
     const histA = transcript.map((t) => ({ role: t.side === "A" ? "assistant" : "user", content: t.text }));
-    const resA = await call(sysA, [...histA, { role: "user", content: r === 1 ? "Открой дебаты сильнейшим аргументом." : "Парируй оппонента и ударь снова." }], { model: mA.id });
+    const resA = await call(sysA, [...histA, { role: "user", content: r === 1 ? "Открой дебаты сильнейшим аргументом." : "Парируй оппонента и ударь снова." }], { tier: mA.tier });
     tokA += resA.usage?.total_tokens || 0;
     transcript.push({ side: "A", text: resA.text }); repliesA.push(resA.text);
 
     // B
     const mB = pickModel(tokB); tiersB.push(mB.label);
     const histB = transcript.map((t) => ({ role: t.side === "B" ? "assistant" : "user", content: t.text }));
-    const resB = await call(sysB, [...histB, { role: "user", content: "Разбей это и ударь в ответ." }], { model: mB.id });
+    const resB = await call(sysB, [...histB, { role: "user", content: "Разбей это и ударь в ответ." }], { tier: mB.tier });
     tokB += resB.usage?.total_tokens || 0;
     transcript.push({ side: "B", text: resB.text }); repliesB.push(resB.text);
 
     // судья раунда
-    const jr = await call(roundJudgeSystem(), [{ role: "user", content: `Тема: ${TOPIC}\nA (${fighterA.name}): «${STANCE_A}» сказал: "${resA.text}"\nB (${fighterB.name}): «${STANCE_B}» сказал: "${resB.text}"` }], { json: true, maxTokens: 300, model: MODEL_TIERS[0].id });
+    const jr = await call(roundJudgeSystem(), [{ role: "user", content: `Тема: ${TOPIC}\nA (${fighterA.name}): «${STANCE_A}» сказал: "${resA.text}"\nB (${fighterB.name}): «${STANCE_B}» сказал: "${resB.text}"` }], { json: true, maxTokens: 300, tier: 0 });
     const { damageToA, damageToB } = roundDamage(jr.parsed);
     curHpA = Math.max(0, curHpA - damageToA); curHpB = Math.max(0, curHpB - damageToB);
 
@@ -135,7 +135,7 @@ async function run() {
 
   // --- финальный вердикт ---
   const full = transcript.map((t) => `${t.side === "A" ? fighterA.name : fighterB.name}: ${t.text}`).join("\n\n");
-  const fin = await call(finalJudgeSystem(), [{ role: "user", content: `Тема: ${TOPIC}\nA: «${STANCE_A}»\nB: «${STANCE_B}»\n\n${full}` }], { json: true, maxTokens: 300, model: MODEL_TIERS[0].id });
+  const fin = await call(finalJudgeSystem(), [{ role: "user", content: `Тема: ${TOPIC}\nA: «${STANCE_A}»\nB: «${STANCE_B}»\n\n${full}` }], { json: true, maxTokens: 300, tier: 0 });
   console.log(`  Финал: ${JSON.stringify(fin.parsed)}\n`);
   check("финал: winner ∈ {A,B,draw}", ["A", "B", "draw"].includes(fin.parsed.winner));
   check("финал: счёт A в 0–100", +fin.parsed.score_a >= 0 && +fin.parsed.score_a <= 100);
