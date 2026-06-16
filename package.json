@@ -15,6 +15,7 @@
     "test:fight": "node tests/test-fight-integrity.mjs",
     "cards": "node scripts/build-cards.mjs",
     "economics": "node scripts/build-economics.mjs",
+    "budget": "node scripts/budget-from-log.mjs",
     "start": "concurrently -k -n SERVER,CLIENT -c magenta,cyan \"npm:server\" \"vite preview --port 5173\""
   },
   "dependencies": {

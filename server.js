@@ -1,6 +1,10 @@
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
+import { mkdirSync } from "node:fs";
+import { appendFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
+import { dirname, join, isAbsolute } from "node:path";
 
 dotenv.config();
 
@@ -32,11 +36,22 @@ const TIERS = [
 ];
 
 // Общий «последний рубеж»: пробуется, когда весь список выбранного тира недоступен.
-// Можно переопределить через LLM_FALLBACKS (через запятую) в .env.
-const FALLBACKS = parseList(
-  process.env.LLM_FALLBACKS,
-  ["qwen/qwen3-next-80b-a3b-instruct:free", "meta-llama/llama-3.3-70b-instruct:free", "openai/gpt-oss-20b:free"]
-);
+// Список берётся ТОЛЬКО из LLM_FALLBACKS (через запятую). Пусто или не задано → без фоллбэков:
+// никаких зашитых дефолтов, что в конфиге — то и есть (пустой конфиг = ничего лишнего не пробуем).
+const FALLBACKS = parseList(process.env.LLM_FALLBACKS, []);
+
+// Уровень «рассуждения» reasoning-моделей. У них max_tokens делится между скрытым reasoning и
+// ответом: при низком лимите reasoning съедает весь бюджет, и content приходит ПУСТЫМ. Поэтому
+// по умолчанию reasoning выключен (весь лимит идёт на ответ). LLM_REASONING_EFFORT: low|medium|high
+// (доля бюджета на reasoning), none/off (выключить вовсе), пусто (не слать параметр — для хостов без поддержки).
+const REASONING = (() => {
+  const v = (process.env.LLM_REASONING_EFFORT ?? "off").trim().toLowerCase();
+  if (v === "" || v === "default") return null; // не добавлять поле reasoning в запрос
+  if (v === "none" || v === "off" || v === "false") return { enabled: false };
+  if (["low", "medium", "high"].includes(v)) return { effort: v };
+  console.warn(`⚠️  LLM_REASONING_EFFORT="${v}" не распознан — выключаю reasoning ("off")`);
+  return { enabled: false };
+})();
 
 const MAX_RETRIES = 3; // попыток на каждую модель
 const RETRY_STATUSES = new Set([429, 502, 503, 500]);
@@ -47,6 +62,26 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const LOG = process.env.LLM_LOG !== "0";
 const since = (t0) => Date.now() - t0; // мс с момента t0
 const tlog = (...a) => { if (LOG) console.log(...a); };
+
+// Файл с логом обращений в формате JSONL (одна JSON-строка на запрос) — по нему потом можно
+// посчитать реальный бюджет: модель, что ответила, и точные токены вход/выход на каждый вызов.
+// Путь: LLM_LOG_FILE (относительный — от папки server.js); "0" или пустая строка — не писать файл.
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const rawLogFile = process.env.LLM_LOG_FILE ?? "logs/llm-usage.jsonl";
+const LOG_FILE = (rawLogFile === "0" || rawLogFile === "")
+  ? null
+  : isAbsolute(rawLogFile) ? rawLogFile : join(__dirname, rawLogFile);
+if (LOG_FILE) {
+  try { mkdirSync(dirname(LOG_FILE), { recursive: true }); }
+  catch (e) { console.warn(`⚠️  не удалось создать папку для лога: ${e.message}`); }
+}
+// Дозапись одной записи; ошибки файла не должны ронять запрос к модели.
+function logToFile(record) {
+  if (!LOG_FILE) return;
+  appendFile(LOG_FILE, JSON.stringify(record) + "\n").catch((e) =>
+    console.warn(`⚠️  не удалось записать лог в ${LOG_FILE}: ${e.message}`)
+  );
+}
 
 if (!API_KEY) {
   console.warn(
@@ -72,7 +107,7 @@ async function callModel(model, chatMessages, max_tokens, temperature = 0.8) {
           "HTTP-Referer": "http://localhost:5173",
           "X-Title": "Debate Arena",
         },
-        body: JSON.stringify({ model, messages: chatMessages, max_tokens, temperature }),
+        body: JSON.stringify({ model, messages: chatMessages, max_tokens, temperature, ...(REASONING ? { reasoning: REASONING } : {}) }),
       });
     } catch (e) {
       tlog(`   ↳ ${model} #${attempt}: сеть упала за ${since(t0)}мс — ${e.message}`);
@@ -150,13 +185,26 @@ app.post("/api/claude", async (req, res) => {
       if (m !== chain[0]) console.warn(`↪️  Фоллбэк: ответила модель ${m}`);
       // Ключевая строка диагностики: total = работа провайдера + ожидание (totalSlept).
       tlog(`✅  [${tag}] ${m} за ${total}мс · моделей ${triedModels}, попыток ${totalAttempts}, в ожидании ${totalSlept}мс, токенов ${result.usage?.total_tokens ?? "?"}`);
+      logToFile({
+        ts: new Date().toISOString(), label: label || null, tier: t, ok: true, model: m,
+        ms: total, sleptMs: totalSlept, attempts: totalAttempts, modelsTried: triedModels, max_tokens,
+        prompt_tokens: result.usage?.prompt_tokens ?? null,
+        completion_tokens: result.usage?.completion_tokens ?? null,
+        total_tokens: result.usage?.total_tokens ?? null,
+      });
       return res.json({ text: result.text, usage: result.usage, model: m });
     }
     last = result;
     console.error(`Модель ${m} не ответила (${result.status}): ${result.message}`);
   }
 
-  tlog(`❌  [${tag}] все модели легли за ${since(reqStart)}мс · моделей ${triedModels}, попыток ${totalAttempts}, в ожидании ${totalSlept}мс`);
+  const failMs = since(reqStart);
+  tlog(`❌  [${tag}] все модели легли за ${failMs}мс · моделей ${triedModels}, попыток ${totalAttempts}, в ожидании ${totalSlept}мс`);
+  logToFile({
+    ts: new Date().toISOString(), label: label || null, tier: t, ok: false, model: null,
+    ms: failMs, sleptMs: totalSlept, attempts: totalAttempts, modelsTried: triedModels, max_tokens,
+    status: last?.status || 502, error: last?.message || "неизвестно",
+  });
   res.status(last?.status || 502).json({
     error: `Все модели недоступны. Последняя ошибка: ${last?.message || "неизвестно"}`,
   });
@@ -171,5 +219,7 @@ app.listen(PORT, () => {
   console.log(`   сервис: ${BASE_URL}`);
   TIERS.forEach((list, i) => console.log(`   тир ${i + 1}: ${list.join(", ")}`));
   console.log(`   фоллбэки: ${FALLBACKS.join(", ") || "—"}`);
-  console.log(`   тайминг-логи: ${LOG ? "вкл (LLM_LOG=0 чтобы выключить)" : "выкл"}\n`);
+  console.log(`   reasoning: ${REASONING ? JSON.stringify(REASONING) : "по умолчанию модели"}`);
+  console.log(`   тайминг-логи: ${LOG ? "вкл (LLM_LOG=0 чтобы выключить)" : "выкл"}`);
+  console.log(`   лог-файл: ${LOG_FILE || "выкл (LLM_LOG_FILE=0)"}\n`);
 });
