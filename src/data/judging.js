@@ -39,6 +39,24 @@ function total(scores) {
   return CRITERIA.reduce((sum, c) => sum + (Number(scores?.[c.id]) || 0), 0);
 }
 
+// Разбор судьи для бойца перед следующим раундом (опция «Учитывать мнение судьи»).
+// side — сторона бойца ("A"/"B"); judgement — распарсенный ответ судьи { a, b, note }.
+// Показываем баллы обоих по всем критериям + реплику судьи. Пусто, если судья не дал JSON.
+export function judgeFeedbackMessage(side, judgement) {
+  if (!judgement || !judgement.a || !judgement.b) return "";
+  const own = side === "A" ? judgement.a : judgement.b;
+  const opp = side === "A" ? judgement.b : judgement.a;
+  const line = (scores) => CRITERIA.map((c) => `${c.name.toLowerCase()} ${Number(scores?.[c.id]) || 0}`).join(", ");
+  const parts = [
+    "Оценка судьи за прошлый раунд.",
+    `Ты: ${line(own)}.`,
+    `Оппонент: ${line(opp)}.`,
+  ];
+  if (judgement.note) parts.push(`Реплика судьи: «${judgement.note}».`);
+  parts.push("Усиль свои слабые критерии и бей туда, где просел оппонент.");
+  return parts.join("\n");
+}
+
 // Из баллов раунда считаем урон: чем слабее выступил боец, тем больше теряет HP.
 export function roundDamage(judgement) {
   const max = maxRoundScore();

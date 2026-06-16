@@ -1,6 +1,6 @@
 // Сборка system-промпта бойца из его скиллов (карточки) + персоны + тонкой настройки + позиции.
 import { SKILL_BY_ID } from "../data/skills.js";
-import { getConfig, replyWords, focusInstruction } from "../data/agentConfig.js";
+import { getConfig, replyWords, focusInstruction, usesJudge } from "../data/agentConfig.js";
 
 export function buildFighterSystem(participant, stance, topicTitle) {
   const cfg = getConfig(participant);
@@ -21,6 +21,11 @@ export function buildFighterSystem(participant, stance, topicTitle) {
     parts.push("Особая установка от твоего создателя:\n" + participant.custom);
   }
 
+  // Доп. правило только если боец настроен учитывать разбор судьи (иначе не тратим токены).
+  const judgeRule = usesJudge(cfg)
+    ? "\n- Если дана оценка судьи за прошлый раунд — учти её: усиль свои слабые критерии и бей туда, где просел оппонент."
+    : "";
+
   parts.push(
     `Твоя позиция, которую ты обязан отстаивать: «${stance}». Оппонент защищает противоположное. ` +
       "Отвечай строго по теме, не уходи в сторону.\n\n" +
@@ -29,7 +34,8 @@ export function buildFighterSystem(participant, stance, topicTitle) {
       "- Только на русском языке. Без английских слов и фраз (названия технологий можно).\n" +
       "- Без повторов, без вступлений вроде «Как боец я…», сразу аргумент.\n" +
       "- Не повторяй уже сказанное в прошлых репликах — каждый раз новый удар.\n" +
-      "- Не используй разметку, эмодзи и кавычки-ёлочки. Только чистый текст реплики."
+      "- Не используй разметку, эмодзи и кавычки-ёлочки. Только чистый текст реплики." +
+      judgeRule
   );
 
   return parts.join("\n\n");

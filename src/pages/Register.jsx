@@ -17,6 +17,7 @@ import {
   MEMORY_OPTIONS,
   REPLY_LEN_OPTIONS,
   FOCUS_OPTIONS,
+  JUDGE_OPTIONS,
   TEMPERATURE_MIN,
   TEMPERATURE_MAX,
   TEMPERATURE_STEP,
@@ -180,6 +181,7 @@ export default function Register() {
 
           <Segmented label="ДЛИНА РЕПЛИКИ" options={REPLY_LEN_OPTIONS.map((o) => ({ id: o.id, name: `${o.name} (~${o.words}сл)`, hint: o.hint }))} value={config.replyLen} onChange={(id) => setCfg({ replyLen: id })} />
           <Segmented label="ТАКТИКА" options={FOCUS_OPTIONS.map((o) => ({ id: o.id, name: o.name, hint: o.hint }))} value={config.focus} onChange={(id) => setCfg({ focus: id })} />
+          <Segmented label="МНЕНИЕ СУДЬИ" options={JUDGE_OPTIONS.map((o) => ({ id: o.id, name: o.name, hint: o.hint }))} value={config.useJudge} onChange={(id) => setCfg({ useJudge: id })} />
 
           {/* Персона */}
           <label style={styles.label}>КОРОННАЯ УСТАНОВКА / ПЕРСОНА (необязательно)</label>
