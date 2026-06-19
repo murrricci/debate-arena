@@ -3,5 +3,19 @@
 # (нужны открытые порты 80 и 443 и A-запись DOMAIN → IP сервера).
 {$DOMAIN} {
 	encode zstd gzip
-	reverse_proxy app:5173
+
+	# API stays public for bots/integrations; mutations are still protected by X-Arena-Key.
+	@api path /api /api/*
+	handle @api {
+		reverse_proxy app:5173
+	}
+
+	# Protect the browser UI. Generate the hash with:
+	#   docker run --rm caddy:2 caddy hash-password --plaintext 'your-password'
+	handle {
+		basic_auth {
+			{$UI_BASIC_AUTH_USER} {$UI_BASIC_AUTH_HASH}
+		}
+		reverse_proxy app:5173
+	}
 }

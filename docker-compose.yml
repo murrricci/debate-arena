@@ -27,6 +27,8 @@ services:
       - "443:443/udp"         # HTTP/3
     environment:
       - DOMAIN=${DOMAIN}      # подставляется в Caddyfile ({$DOMAIN})
+      - UI_BASIC_AUTH_USER=${UI_BASIC_AUTH_USER}
+      - UI_BASIC_AUTH_HASH=${UI_BASIC_AUTH_HASH}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data      # сертификаты — переживают рестарт

@@ -28,8 +28,34 @@ GitHub-переменные (`Variables`) не нужны — путь `/opt/deb
 4. Создать `/opt/debate-arena/`, владелец — пользователь деплоя.
 5. Положить в `/opt/debate-arena/.env` заполненный файл по образцу
    [`.env.deploy.example`](.env.deploy.example) (ключи LLM, `ARENA_API_KEY`,
-   `DOMAIN`, `ALLOWED_HOSTS`).
+   `DOMAIN`, `ALLOWED_HOSTS`, `UI_BASIC_AUTH_USER`, `UI_BASIC_AUTH_HASH`).
 6. Добавить публичную часть `SSH_KEY` в `~/.ssh/authorized_keys` пользователя деплоя.
+
+## Basic Auth для UI
+
+Caddy закрывает браузерный интерфейс Basic Auth, но пропускает `/api/*` без неё.
+Пароль в Caddyfile нельзя хранить в открытом виде — нужен хэш:
+
+```bash
+docker run --rm caddy:2 caddy hash-password --plaintext 'your-password'
+```
+
+Результат положи в `/opt/debate-arena/.env`:
+
+```env
+UI_BASIC_AUTH_USER=arena
+UI_BASIC_AUTH_HASH='$2a$14$...'
+```
+
+Одинарные кавычки важны: bcrypt/argon2id-хэши содержат `$`, а Docker Compose
+без кавычек воспринимает части хэша как переменные окружения.
+
+После изменения `.env` перезапусти Caddy:
+
+```bash
+cd /opt/debate-arena
+docker compose up -d caddy
+```
 
 `docker-compose.yml` и `Caddyfile` копируются на сервер автоматически при каждом
 деплое (scp), вручную класть их не нужно. `.env` деплой не трогает.
