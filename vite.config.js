@@ -24,6 +24,17 @@ export default defineConfig(({ mode }) => {
   return {
     plugins: [react()],
     server: { port: 5173, proxy },
-    preview: { port: 5173, proxy },
+    preview: {
+      port: 5173,
+      host: true, // слушать 0.0.0.0 — чтобы Caddy из соседнего контейнера достучался
+      // За Caddy приходит чужой Host (arena.gpb-dev.ru); vite preview 5.4.x иначе отдаёт 403.
+      // ALLOWED_HOSTS задаётся в проде (.env); пусто → разрешить все (локальный npm start).
+      allowedHosts: (() => {
+        const list = (process.env.ALLOWED_HOSTS || "")
+          .split(",").map((s) => s.trim()).filter(Boolean);
+        return list.length ? list : true;
+      })(),
+      proxy,
+    },
   };
 });
