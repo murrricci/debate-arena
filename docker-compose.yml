@@ -1,0 +1,39 @@
+services:
+  app:
+    image: leidruid/debate-arena:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    env_file: .env            # LLM_*, ARENA_*, ALLOWED_HOSTS, PORT=3001 и т.д.
+    volumes:
+      - arena-data:/app/data  # sqlite-БД (ARENA_DB_FILE=data/arena.db)
+      - arena-logs:/app/logs  # JSONL-лог обращений к моделям
+    expose:
+      - "5173"                # только во внутреннюю сеть compose; наружу — через caddy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3001/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"         # HTTP/3
+    environment:
+      - DOMAIN=${DOMAIN}      # подставляется в Caddyfile ({$DOMAIN})
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data      # сертификаты — переживают рестарт
+      - caddy-config:/config
+
+volumes:
+  arena-data:
+  arena-logs:
+  caddy-data:
+  caddy-config:

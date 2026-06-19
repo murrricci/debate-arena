@@ -1,0 +1,17 @@
+node_modules
+.git
+.gitignore
+.env
+.env.*
+dist
+data
+logs
+*.log
+.idea
+.DS_Store
+docs
+.github
+tests
+.superpowers
+print/*.pdf
+img.png

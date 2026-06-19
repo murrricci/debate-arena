@@ -1,0 +1,7 @@
+# Reverse-proxy + auto-TLS для Debate Arena. Домен берётся из env DOMAIN
+# (подставляет docker compose из .env). Сертификат Let's Encrypt — автоматически
+# (нужны открытые порты 80 и 443 и A-запись DOMAIN → IP сервера).
+{$DOMAIN} {
+	encode zstd gzip
+	reverse_proxy app:5173
+}
