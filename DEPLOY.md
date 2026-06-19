@@ -1,6 +1,6 @@
 # Деплой Debate Arena
 
-CI/CD: push git-тага `vX.Y.Z` → GitHub Actions собирает Docker-образ
+CI/CD: push git-тега `vX.Y.Z` → GitHub Actions собирает Docker-образ
 `leidruid/debate-arena:X.Y.Z-<short sha>` (+ `latest`), пушит в Docker Hub и
 по SSH деплоит на сервер через `docker compose`. Перед приложением — Caddy
 (reverse-proxy + auto-TLS) для `arena.gpb-dev.ru`.
@@ -52,6 +52,8 @@ Workflow соберёт `leidruid/debate-arena:1.2.3-<short sha>`, переед�
 cd /opt/debate-arena && docker compose ps        # app healthy, caddy up
 curl -fsS https://arena.gpb-dev.ru/api/health    # {"ok":true,...}
 ```
+
+> Примечание: деплой делает `docker logout` в конце. Для ручного `docker compose pull` приватного образа сначала выполните `docker login -u leidruid`.
 
 ## Опционально: email для ACME
 
