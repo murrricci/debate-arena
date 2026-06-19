@@ -1,115 +1,191 @@
-// Хранилище участников и очков в localStorage + рассылка изменений в другие окна.
+// Клиент участников и очков. Источник правды — серверная БД арены (db.js / server.js),
+// но локально держим синхронный кэш: геттеры остаются синхронными (как раньше), мутации
+// обновляют кэш ОПТИМИСТИЧНО и параллельно уходят на сервер. Так Arena/Register/Scoreboard
+// и тесты не меняются, а данные переживают перезапуск и видны из бота.
+//
+// В Node (юнит-тесты) сети нет — модуль работает как чистый localStorage-кэш, как прежде.
 import { publish } from "./bus.js";
+import { nextStats, sortLeaderboard, emptyStats, MAX_UPGRADES } from "./scoring.js";
+
+export { MAX_UPGRADES };
 
 const KEY = "debate-arena:participants";
+const MIGRATED_KEY = "debate-arena:migrated";
+const POLL_MS = 5000;
+// Сеть только в браузере; в Node (тесты) — чистый локальный режим.
+const inBrowser = typeof window !== "undefined" && typeof fetch === "function";
 
-function read() {
-  try {
-    return JSON.parse(localStorage.getItem(KEY)) || [];
-  } catch {
-    return [];
-  }
+function readLS() {
+  try { return JSON.parse(localStorage.getItem(KEY)) || []; } catch { return []; }
 }
 
-function write(list) {
-  localStorage.setItem(KEY, JSON.stringify(list));
-  publish("participants", list); // другое окно (табло) подхватит
+let cache = readLS();
+const unconfirmed = new Set(); // id оптимистично созданных агентов, ещё не подтверждённых сервером
+let pendingWrites = 0;         // мутаций «в полёте» — чтобы поллинг не затирал оптимистику
+
+function persist() {
+  try { localStorage.setItem(KEY, JSON.stringify(cache)); } catch { /* ignore */ }
+  publish("participants", cache); // другое окно (табло) подхватит
+}
+function setCache(next) {
+  cache = next;
+  persist();
 }
 
-export const MAX_UPGRADES = 3; // сколько раз участник может прокачать персонажа
+// --- сетевой слой (только браузер) ---
+async function send(method, url, body) {
+  const res = await fetch(url, {
+    method,
+    headers: body ? { "Content-Type": "application/json" } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  try { return await res.json(); } catch { return null; }
+}
+function track(promise) {
+  pendingWrites++;
+  return promise.finally(() => { pendingWrites--; });
+}
+// Заменить/добавить одного агента из авторитетного серверного ответа.
+function reconcile(agent) {
+  if (!agent || !agent.id) return;
+  const idx = cache.findIndex((p) => p.id === agent.id);
+  if (idx >= 0) setCache(cache.map((p) => (p.id === agent.id ? agent : p)));
+  else setCache([...cache, agent]);
+}
 
+// --- ГЕТТЕРЫ (синхронные, читают кэш) ---
 export function getParticipants() {
-  return read();
+  return cache;
 }
-
 export function getParticipant(id) {
-  return read().find((p) => p.id === id) || null;
+  return cache.find((p) => p.id === id) || null;
+}
+export function leaderboard() {
+  return sortLeaderboard(cache);
 }
 
-// Апгрейд персонажа: меняем параметры, увеличиваем счётчик использований.
-// Возвращает обновлённого участника или null, если лимит исчерпан.
-export function upgradeParticipant(id, { name, skills, custom, config }) {
-  const list = read();
-  const p = list.find((x) => x.id === id);
-  if (!p) return null;
-  if ((p.upgrades || 0) >= MAX_UPGRADES) return null;
-  const next = list.map((x) =>
-    x.id === id
-      ? {
-          ...x,
-          name: name?.trim() || x.name,
-          skills: skills || x.skills,
-          custom: (custom ?? x.custom ?? "").trim(),
-          config: config || x.config,
-          upgrades: (x.upgrades || 0) + 1,
-        }
-      : x
-  );
-  write(next);
-  return next.find((x) => x.id === id);
-}
-
+// --- МУТАЦИИ (оптимистичный кэш + фоновая отправка на сервер) ---
 export function addParticipant({ name, skills, custom, config }) {
-  const list = read();
   const participant = {
     id: crypto.randomUUID(),
-    name: name.trim(),
+    name: (name || "").trim(),
     skills: skills || [],
     custom: (custom || "").trim(),
     config: config || {},
     upgrades: 0,
     createdAt: Date.now(),
-    stats: { wins: 0, losses: 0, draws: 0, battles: 0, points: 0 },
+    stats: emptyStats(),
   };
-  write([...list, participant]);
+  setCache([...cache, participant]);
+  if (inBrowser) {
+    unconfirmed.add(participant.id);
+    track(send("POST", "/api/agents", {
+      id: participant.id, name: participant.name, skills: participant.skills,
+      custom: participant.custom, config: participant.config, source: "operator",
+    }))
+      .then((r) => { if (r?.agent) reconcile(r.agent); })
+      .catch(() => {})
+      .finally(() => unconfirmed.delete(participant.id));
+  }
   return participant;
 }
 
-// Обнулить статистику конкретных участников (перед стартом турнира).
-export function resetScoresFor(ids) {
-  const set = new Set(ids);
-  write(read().map((p) => (set.has(p.id) ? { ...p, stats: { wins: 0, losses: 0, draws: 0, battles: 0, points: 0 } } : p)));
+// Апгрейд: лимит проверяем по кэшу (он синхронизирован с сервером), сервер — авторитет.
+// Возвращает обновлённого участника или null, если лимит исчерпан (как раньше).
+export function upgradeParticipant(id, { name, skills, custom, config }) {
+  const p = cache.find((x) => x.id === id);
+  if (!p) return null;
+  if ((p.upgrades || 0) >= MAX_UPGRADES) return null;
+  const updated = {
+    ...p,
+    name: name?.trim() || p.name,
+    skills: skills || p.skills,
+    custom: (custom ?? p.custom ?? "").trim(),
+    config: config || p.config,
+    upgrades: (p.upgrades || 0) + 1,
+  };
+  setCache(cache.map((x) => (x.id === id ? updated : x)));
+  if (inBrowser) {
+    track(send("PATCH", `/api/agents/${id}`, {
+      name: updated.name, skills: updated.skills, custom: updated.custom, config: updated.config,
+    }))
+      .then((r) => { if (r?.id) reconcile(r); })
+      .catch(() => {});
+  }
+  return updated;
 }
 
 export function removeParticipant(id) {
-  write(read().filter((p) => p.id !== id));
+  setCache(cache.filter((p) => p.id !== id));
+  if (inBrowser) track(send("DELETE", `/api/agents/${id}`)).catch(() => {});
+}
+
+export function resetScoresFor(ids) {
+  const set = new Set(ids);
+  setCache(cache.map((p) => (set.has(p.id) ? { ...p, stats: emptyStats() } : p)));
+  if (inBrowser) track(send("POST", "/api/results/reset", { ids })).then(afterReset).catch(() => {});
 }
 
 export function resetScores() {
-  write(read().map((p) => ({ ...p, stats: { wins: 0, losses: 0, draws: 0, battles: 0, points: 0 } })));
+  setCache(cache.map((p) => ({ ...p, stats: emptyStats() })));
+  if (inBrowser) track(send("POST", "/api/results/reset", {})).then(afterReset).catch(() => {});
+}
+function afterReset(r) {
+  if (r && Array.isArray(r.agents)) setCache(r.agents);
 }
 
-// Начисление очков по итогу боя.
-// Победа: +3 и бонус за разрыв счёта; ничья: +1 каждому; поражение: +0.
-export function applyResult({ aId, bId, winner, scoreA, scoreB }) {
-  const list = read();
-  const margin = Math.abs((scoreA || 0) - (scoreB || 0));
-  const bonus = Math.round(margin / 20); // 0..5 доп. очков за уверенную победу
+// Начисление очков по итогу боя. Оптимистично — той же формулой, что и сервер (scoring.js),
+// затем сервер присылает авторитетные значения и мы их подставляем.
+export function applyResult({ aId, bId, winner, scoreA, scoreB, topic = null, tournament = false }) {
+  setCache(cache.map((p) => {
+    if (p.id === aId) return { ...p, stats: nextStats(p.stats, "A", { winner, scoreA, scoreB }) };
+    if (p.id === bId) return { ...p, stats: nextStats(p.stats, "B", { winner, scoreA, scoreB }) };
+    return p;
+  }));
+  if (inBrowser) {
+    track(send("POST", "/api/results", { aId, bId, winner, scoreA, scoreB, topic, tournament }))
+      .then((r) => { if (r?.a) reconcile(r.a); if (r?.b) reconcile(r.b); })
+      .catch(() => {});
+  }
+  return cache;
+}
 
-  const next = list.map((p) => {
-    if (p.id !== aId && p.id !== bId) return p;
-    const s = { ...p.stats };
-    s.battles += 1;
-    if (winner === "draw") {
-      s.draws += 1;
-      s.points += 1;
-    } else if ((winner === "A" && p.id === aId) || (winner === "B" && p.id === bId)) {
-      s.wins += 1;
-      s.points += 3 + bonus;
-    } else {
-      s.losses += 1;
+// --- СИНХРОНИЗАЦИЯ С СЕРВЕРОМ (только браузер) ---
+async function syncFromServer() {
+  if (!inBrowser || pendingWrites > 0) return; // не затирать оптимистичные изменения «в полёте»
+  try {
+    const res = await fetch("/api/agents");
+    if (!res.ok) return;
+    const data = await res.json();
+    if (!Array.isArray(data.agents)) return;
+    let list = data.agents;
+    if (unconfirmed.size) {
+      const present = new Set(list.map((p) => p.id));
+      const keep = cache.filter((p) => unconfirmed.has(p.id) && !present.has(p.id));
+      list = [...list, ...keep];
     }
-    return { ...p, stats: s };
-  });
-  write(next);
-  return next;
+    setCache(list);
+  } catch { /* сервер недоступен — продолжаем на кэше */ }
 }
 
-export function leaderboard() {
-  return [...read()].sort(
-    (a, b) =>
-      b.stats.points - a.stats.points ||
-      b.stats.wins - a.stats.wins ||
-      a.stats.losses - b.stats.losses
-  );
+// Одноразовый перенос ранее созданных в localStorage участников на сервер.
+async function migrateLocalToServer() {
+  try {
+    if (localStorage.getItem(MIGRATED_KEY)) return;
+    for (const p of readLS()) {
+      await send("POST", "/api/agents", {
+        id: p.id, name: p.name, skills: p.skills, custom: p.custom, config: p.config,
+        source: "operator", upgrades: p.upgrades || 0, createdAt: p.createdAt, stats: p.stats,
+      }).catch(() => {});
+    }
+    localStorage.setItem(MIGRATED_KEY, "1");
+  } catch { /* ignore */ }
+}
+
+if (inBrowser) {
+  (async () => {
+    await migrateLocalToServer();
+    await syncFromServer();
+    setInterval(syncFromServer, POLL_MS);
+  })();
 }

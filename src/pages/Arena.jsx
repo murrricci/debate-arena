@@ -264,7 +264,7 @@ export default function Arena() {
       console.log(`[БОЙ] всего ${wallMs}мс · LLM ${llm}мс (${Math.round((llm / wallMs) * 100)}%) · паузы UX ${wallMs - llm}мс · ₽${fightCost.toFixed(2)}`);
 
       // Начисляем очки в зачёт (для турнирной таблицы и разминочного рейтинга).
-      applyResult({ aId: A.id, bId: B.id, winner, scoreA: final.score_a, scoreB: final.score_b });
+      applyResult({ aId: A.id, bId: B.id, winner, scoreA: final.score_a, scoreB: final.score_b, topic: topic.title, tournament });
       if (tournament) {
         recordMatchResult({ winner, scoreA: final.score_a, scoreB: final.score_b });
         setTour(getTournament());

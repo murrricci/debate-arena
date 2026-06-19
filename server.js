@@ -5,12 +5,50 @@ import { mkdirSync } from "node:fs";
 import { appendFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join, isAbsolute } from "node:path";
+import { timingSafeEqual } from "node:crypto";
+
+import * as agents from "./db.js";
+import { SKILL_CARDS } from "./src/data/skills.js";
+import {
+  DEFAULT_CONFIG,
+  MEMORY_OPTIONS,
+  REPLY_LEN_OPTIONS,
+  FOCUS_OPTIONS,
+  JUDGE_OPTIONS,
+  TEMPERATURE_MIN,
+  TEMPERATURE_MAX,
+  TEMPERATURE_STEP,
+  TEMPERATURE_ZONES,
+} from "./src/data/agentConfig.js";
 
 dotenv.config();
 
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: "1mb" }));
+
+// Хранилище агентов и результатов (node:sqlite). Источник правды для всей арены.
+agents.initDb();
+
+// --- Авторизация сервис-сервис для управления агентами (бот → арена) ---
+// Заголовок X-Arena-Key сверяется с ARENA_API_KEY. Фронт-киоск ходит через Vite-proxy,
+// который сам подставляет ключ (он не попадает в браузерный бандл). /api/claude и
+// открытые GET ключа НЕ требуют.
+const ARENA_KEY = process.env.ARENA_API_KEY || "";
+if (!ARENA_KEY) {
+  console.warn(
+    "\n⚠️  ARENA_API_KEY не задан — управление агентами по API отключено (мутации вернут 401). Впиши ключ в .env.\n"
+  );
+}
+function requireArenaKey(req, res, next) {
+  if (!ARENA_KEY) return res.status(401).json({ error: "ARENA_API_KEY не настроен на сервере" });
+  const got = Buffer.from(req.get("X-Arena-Key") || "");
+  const want = Buffer.from(ARENA_KEY);
+  if (got.length !== want.length || !timingSafeEqual(got, want)) {
+    return res.status(401).json({ error: "неверный ключ доступа" });
+  }
+  next();
+}
 
 const PORT = process.env.PORT || 3001;
 const API_KEY = process.env.LLM_API_KEY || process.env.OPENROUTER_API_KEY;
@@ -254,8 +292,95 @@ app.post("/api/claude", async (req, res) => {
   });
 });
 
+// ======================= API УПРАВЛЕНИЯ АГЕНТАМИ =======================
+// Контракт согласован с bot-conf-max (см. PLAN_API.md). Форма участника в ответах
+// совпадает с прежним participant — фронт переписывать не нужно.
+
+// Справочники для построения формы на стороне бота (открытый — нет секретов).
+function formMeta() {
+  return {
+    skills: SKILL_CARDS,
+    config: {
+      defaults: DEFAULT_CONFIG,
+      memory: MEMORY_OPTIONS,
+      temperature: { min: TEMPERATURE_MIN, max: TEMPERATURE_MAX, step: TEMPERATURE_STEP, zones: TEMPERATURE_ZONES },
+      replyLen: REPLY_LEN_OPTIONS,
+      focus: FOCUS_OPTIONS,
+      judge: JUDGE_OPTIONS,
+    },
+    limits: { maxUpgrades: agents.MAX_UPGRADES },
+  };
+}
+app.get("/api/meta/form", (_req, res) => res.json(formMeta()));
+
+// Ростер целиком — для фронта-киоска и табло (открытый, как и текущее чтение участников).
+app.get("/api/agents", (_req, res) => res.json({ agents: agents.listAgents() }));
+
+// Лидерборд (открытый — его и так показывает табло).
+app.get("/api/results/leaderboard", (_req, res) => res.json({ leaderboard: agents.leaderboard() }));
+
+// --- маршруты по внешнему пользователю (bot-conf-max ключует агента по своему users.id) ---
+app.get("/api/agents/by-external/:externalId", requireArenaKey, (req, res) => {
+  const agent = agents.getAgentByExternalId(req.params.externalId);
+  if (!agent) return res.status(404).json({ error: "not_found" });
+  res.json(agents.withLimit(agent));
+});
+
+app.patch("/api/agents/by-external/:externalId", requireArenaKey, (req, res) => {
+  const r = agents.upgradeAgent({ externalId: req.params.externalId }, req.body || {});
+  if (r.error === "not_found") return res.status(404).json({ error: "not_found" });
+  if (r.error === "validation") return res.status(400).json({ error: "validation", detail: r.detail });
+  if (r.error === "upgrade_limit_reached") {
+    return res.status(403).json({ error: "upgrade_limit_reached", ...agents.withLimit(r.agent) });
+  }
+  res.json(agents.withLimit(r.agent));
+});
+
+app.get("/api/results/by-external/:externalId", requireArenaKey, (req, res) => {
+  const limit = Number(req.query.limit) || 50;
+  const r = agents.userResults({ externalId: req.params.externalId }, { limit });
+  if (r.error === "not_found") return res.status(404).json({ error: "not_found" });
+  res.json(r);
+});
+
+// --- создание (и бот с externalId, и оператор/фронт без него) ---
+app.post("/api/agents", requireArenaKey, (req, res) => {
+  const r = agents.createAgent(req.body || {});
+  if (r.error === "validation") return res.status(400).json({ error: "validation", detail: r.detail });
+  if (r.error === "agent_exists") return res.status(409).json({ error: "agent_exists", agent: agents.withLimit(r.agent) });
+  res.status(201).json(agents.withLimit(r.agent));
+});
+
+// --- операторские операции по внутреннему id (фронт-киоск, Register.jsx) ---
+app.patch("/api/agents/:id", requireArenaKey, (req, res) => {
+  const r = agents.upgradeAgent({ id: req.params.id }, req.body || {});
+  if (r.error === "not_found") return res.status(404).json({ error: "not_found" });
+  if (r.error === "validation") return res.status(400).json({ error: "validation", detail: r.detail });
+  if (r.error === "upgrade_limit_reached") {
+    return res.status(403).json({ error: "upgrade_limit_reached", ...agents.withLimit(r.agent) });
+  }
+  res.json(agents.withLimit(r.agent));
+});
+
+app.delete("/api/agents/:id", requireArenaKey, (req, res) => {
+  res.json(agents.removeAgent(req.params.id));
+});
+
+// --- результат боя (от киоска) ---
+app.post("/api/results", requireArenaKey, (req, res) => {
+  const r = agents.applyResult(req.body || {});
+  if (r.error === "validation") return res.status(400).json({ error: "validation", detail: r.detail });
+  res.json({ a: r.a, b: r.b });
+});
+
+// --- сброс очков (перед стартом турнира / ручной сброс на табло) ---
+app.post("/api/results/reset", requireArenaKey, (req, res) => {
+  const ids = Array.isArray(req.body?.ids) ? req.body.ids : null;
+  res.json(agents.resetScores(ids));
+});
+
 app.get("/api/health", (_req, res) => {
-  res.json({ ok: true, baseUrl: BASE_URL, tiers: TIERS, fallbacks: FALLBACKS, keyConfigured: Boolean(API_KEY) });
+  res.json({ ok: true, baseUrl: BASE_URL, tiers: TIERS, fallbacks: FALLBACKS, keyConfigured: Boolean(API_KEY), arenaApi: Boolean(ARENA_KEY) });
 });
 
 app.listen(PORT, () => {
@@ -269,5 +394,6 @@ app.listen(PORT, () => {
   console.log(`   лимит токенов судьи: ${JUDGE_MAX_TOKENS ?? "из запроса (фронт: 300)"}`);
   console.log(`   выбор в тире: ${RANDOM_TIER ? "случайный (LLM_TIER_RANDOM)" : "по порядку"}`);
   console.log(`   тайминг-логи: ${LOG ? "вкл (LLM_LOG=0 чтобы выключить)" : "выкл"}`);
-  console.log(`   лог-файл: ${LOG_FILE || "выкл (LLM_LOG_FILE=0)"}\n`);
+  console.log(`   лог-файл: ${LOG_FILE || "выкл (LLM_LOG_FILE=0)"}`);
+  console.log(`   API агентов: ${ARENA_KEY ? "вкл (X-Arena-Key)" : "выкл (нет ARENA_API_KEY)"}\n`);
 });
