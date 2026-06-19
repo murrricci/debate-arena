@@ -12,5 +12,6 @@ logs
 docs
 .github
 tests
+.superpowers
 print/*.pdf
 img.png
