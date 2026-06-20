@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join, isAbsolute } from "node:path";
 
 import { nextStats, emptyStats, sortLeaderboard, MAX_UPGRADES } from "./src/lib/scoring.js";
+import { DEFAULT_TOURNAMENT, cloneTournament } from "./src/lib/tournamentCore.js";
 import { SKILL_CARDS } from "./src/data/skills.js";
 import {
   DEFAULT_CONFIG,
@@ -85,6 +86,13 @@ export function initDb(filename) {
   db.exec("CREATE INDEX IF NOT EXISTS idx_battles_b ON battles(b_id);");
   db.exec("CREATE INDEX IF NOT EXISTS idx_battles_created ON battles(created_at);");
   db.exec("CREATE INDEX IF NOT EXISTS idx_battles_tournament ON battles(tournament);");
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS app_state (
+      key        TEXT PRIMARY KEY,
+      value      TEXT NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+  `);
   return db;
 }
 
@@ -109,6 +117,7 @@ function inTx(fn) {
 }
 
 const safeParse = (s, fallback) => { try { return JSON.parse(s); } catch { return fallback; } };
+const deepClone = (value) => JSON.parse(JSON.stringify(value));
 
 function rowToParticipant(row) {
   if (!row) return null;
@@ -417,4 +426,34 @@ export function withLimit(agent) {
   if (!agent) return agent;
   const upgradesLeft = Math.max(0, MAX_UPGRADES - (agent.upgrades || 0));
   return { ...agent, upgradesLeft, locked: upgradesLeft <= 0 };
+}
+
+// --- серверное состояние приложения ---
+const TOURNAMENT_STATE_KEY = "tournament";
+
+function readState(key, fallback) {
+  const row = db.prepare("SELECT value FROM app_state WHERE key = ?").get(key);
+  if (!row) return deepClone(fallback);
+  return safeParse(row.value, deepClone(fallback));
+}
+
+function writeState(key, value) {
+  db.prepare(`
+    INSERT INTO app_state (key, value, updated_at)
+    VALUES (?, ?, ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+  `).run(key, JSON.stringify(value), Date.now());
+  return deepClone(value);
+}
+
+export function getTournamentState() {
+  return cloneTournament(readState(TOURNAMENT_STATE_KEY, DEFAULT_TOURNAMENT));
+}
+
+export function saveTournamentState(tournament) {
+  return writeState(TOURNAMENT_STATE_KEY, cloneTournament(tournament));
+}
+
+export function resetTournamentState() {
+  return saveTournamentState(DEFAULT_TOURNAMENT);
 }

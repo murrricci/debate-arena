@@ -11,6 +11,7 @@ import { pickSprite } from "../data/sprites.js";
 import { filterFighters, fighterOptionLabel } from "../lib/fighterSearch.js";
 import { runDebateFight } from "../lib/fightRunner.js";
 import { historyWithMode } from "../lib/battleHistory.js";
+import { clearLiveSnapshot, publishLiveSnapshot } from "../lib/liveState.js";
 import PixelFighter from "../components/PixelFighter.jsx";
 import PixelArena from "../components/PixelArena.jsx";
 
@@ -62,8 +63,11 @@ export default function Arena() {
 
   // Транслируем состояние боя на табло (второе окно).
   useEffect(() => {
-    if (!A || !B) return;
-    publish("live", {
+    if (!A || !B) {
+      clearLiveSnapshot().catch(() => {});
+      return;
+    }
+    const livePayload = {
       phase,
       topic: topic.title,
       a: { name: A.name, face: fighterFace(A), color: fighterColor(A, C.red), stance: stanceA, hp: hpA, tier: tierA },
@@ -72,7 +76,9 @@ export default function Arena() {
       status,
       lastNote: [...log].reverse().find((l) => l.side === "judge")?.text || "",
       verdict,
-    });
+    };
+    publish("live", livePayload);
+    publishLiveSnapshot(livePayload).catch(() => {});
   }, [phase, hpA, hpB, round, status, verdict, aId, bId, topicId, swapped, tierA, tierB]); // eslint-disable-line
 
   function rollTopic() {
@@ -165,7 +171,7 @@ export default function Arena() {
       console.log(`[БОЙ] всего ${wallMs}мс · LLM ${llm}мс (${Math.round((llm / wallMs) * 100)}%) · паузы UX ${wallMs - llm}мс · ₽${result.fightCost.toFixed(2)}`);
 
       // Начисляем очки только в зачёт разминки. Турнир хранит отдельную таблицу.
-      applyResult({
+      await applyResult({
         aId: A.id,
         bId: B.id,
         winner: result.winner,

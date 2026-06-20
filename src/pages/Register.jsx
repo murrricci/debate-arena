@@ -82,29 +82,37 @@ export default function Register() {
     }
   }
 
-  function submit(e) {
+  async function submit(e) {
     e.preventDefault();
     setError("");
     if (closed) return setError("Приём заявок закрыт — турнир уже сформирован.");
     if (!name.trim()) return setError("Впиши имя бойца (или сгенерируй через ИИ).");
     if (skills.length === 0) return setError("Выбери хотя бы один скилл.");
 
-    if (editingId) {
-      const res = upgradeParticipant(editingId, { name, skills, custom, config });
-      if (!res) return setError("Лимит апгрейдов исчерпан.");
-    } else {
-      addParticipant({ name, skills, custom, config });
+    try {
+      if (editingId) {
+        const res = await upgradeParticipant(editingId, { name, skills, custom, config });
+        if (!res) return setError("Лимит апгрейдов исчерпан.");
+      } else {
+        await addParticipant({ name, skills, custom, config });
+      }
+      setList(getParticipants());
+      resetForm();
+    } catch (e) {
+      setError("Не удалось сохранить бойца: " + e.message);
     }
-    setList(getParticipants());
-    resetForm();
   }
 
-  function launchTournament() {
+  async function launchTournament() {
     if (!confirm(`Закрыть приём заявок и сформировать турнир из топ-${TOP_N}? После этого апгрейд и новые заявки будут недоступны.`)) return;
-    const res = closeAndStart();
-    if (res?.error) return setError(res.error);
-    setTour(getTournament());
-    navigate("/tournament");
+    try {
+      const res = await closeAndStart();
+      if (res?.error) return setError(res.error);
+      setTour(res || getTournament());
+      navigate("/tournament");
+    } catch (e) {
+      setError("Не удалось сформировать турнир: " + e.message);
+    }
   }
 
   const editing = editingId ? getParticipant(editingId) : null;
@@ -229,7 +237,7 @@ export default function Register() {
             </a>
             <a href="#/tournament" style={styles.btnGhost}>🏆 К ТУРНИРУ</a>
             <button type="button" style={{ ...styles.btnGhost, marginLeft: "auto", color: C.danger, borderColor: C.danger }}
-              onClick={() => { if (confirm("Сбросить турнир и снова открыть приём заявок?")) { resetTournament(); setTour(getTournament()); } }}>
+              onClick={async () => { if (confirm("Сбросить турнир и снова открыть приём заявок?")) { setTour(await resetTournament()); } }}>
               ↺ сбросить турнир
             </button>
           </div>
@@ -258,7 +266,7 @@ export default function Register() {
                 {p.stats.wins}–{p.stats.losses}
               </div>
               {canUpgrade && <button style={styles.btnGhost} onClick={() => startEdit(p)} title="Апгрейд">✎</button>}
-              {!closed && <button style={styles.btnGhost} onClick={() => removeParticipant(p.id)}>✕</button>}
+              {!closed && <button style={styles.btnGhost} onClick={async () => { await removeParticipant(p.id); setList(getParticipants()); }}>✕</button>}
             </div>
           );
         })}

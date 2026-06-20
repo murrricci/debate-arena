@@ -40,11 +40,7 @@ export default function Tournament() {
       setTour(getTournament());
     };
     const timer = setInterval(refresh, 5000);
-    window.addEventListener("storage", refresh);
-    return () => {
-      clearInterval(timer);
-      window.removeEventListener("storage", refresh);
-    };
+    return () => clearInterval(timer);
   }, []);
 
   const byId = useMemo(() => Object.fromEntries(people.map((p) => [p.id, p])), [people]);
@@ -62,14 +58,23 @@ export default function Tournament() {
       .filter((m) => !activeRef.current.has(m.id));
     if (!matches.length) return;
 
+    let cancelled = false;
     matches.forEach((m) => activeRef.current.add(m.id));
-    const marked = markMatchesRunning(matches.map((m) => m.id));
-    setTour(marked);
-    matches.forEach((m) => runTournamentMatch(m, byId, topicById, activeRef, setTour));
+    markMatchesRunning(matches.map((m) => m.id))
+      .then((marked) => {
+        if (cancelled) return;
+        setTour(marked);
+        matches.forEach((m) => runTournamentMatch(m, byId, topicById, activeRef, setTour));
+      })
+      .catch((e) => {
+        matches.forEach((m) => activeRef.current.delete(m.id));
+        console.warn("Не удалось отметить турнирные матчи running:", e.message);
+      });
+    return () => { cancelled = true; };
   }, [tour.status, tour.matches, byId, topicById]);
 
-  function startQueue() {
-    const next = beginTournament();
+  async function startQueue() {
+    const next = await beginTournament();
     setTour(next);
   }
 
@@ -174,10 +179,10 @@ async function runTournamentMatch(match, byId, topicById, activeRef, setTour) {
     } catch (e) {
       console.warn("Не удалось сохранить историю турнирного боя:", e.message);
     }
-    const next = recordMatchResult({ matchId: match.id, winner: result.winner, scoreA: result.scoreA, scoreB: result.scoreB, battleId });
+    const next = await recordMatchResult({ matchId: match.id, winner: result.winner, scoreA: result.scoreA, scoreB: result.scoreB, battleId });
     setTour(next);
   } catch (e) {
-    const next = recordMatchError({ matchId: match.id, error: e.message });
+    const next = await recordMatchError({ matchId: match.id, error: e.message });
     setTour(next);
   } finally {
     activeRef.current.delete(match.id);

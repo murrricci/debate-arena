@@ -34,25 +34,28 @@ flowchart LR
     Board
     Reg
     Guide
-    Store["store.js / tournament.js<br/>(localStorage)"]
-    Bus["bus.js<br/>(BroadcastChannel)"]
+    Store["store.js / tournament.js<br/>(in-memory cache от API)"]
+    Live["liveState.js<br/>(/api/live + SSE)"]
+    Bus["bus.js<br/>(BroadcastChannel, локальная инвалидация)"]
   end
 
-  Reg -->|пишет| Store
-  Arena -->|читает/пишет| Store
-  Board -->|читает| Store
+  Reg -->|пишет через API| Store
+  Arena -->|читает/пишет через API| Store
+  Board -->|читает cache API| Store
   Store <-->|синхрон между окнами| Bus
-  Arena -->|live-состояние боя| Bus --> Board
+  Arena -->|live-состояние боя| Live --> Board
+  Arena -->|локальная live-инвалидация| Bus --> Board
 
-  Arena -->|"/api/claude"| BE["Бэкенд-прокси<br/>Express (server.js)"]
+  Store -->|"/api/agents/results/tournament"| BE["Бэкенд<br/>Express + SQLite (server.js/db.js)"]
+  Arena -->|"/api/claude"| BE
   BE -->|"x ретраи + фоллбэк моделей"| OR["OpenRouter API<br/>(или ProxyAPI)"]
   OR --> LLM["LLM: бойцы (120B→70B→20B),<br/>судья, финал, генератор имён"]
 ```
 
 **Поток одного боя:** Arena последовательно шлёт 10 запросов на `/api/claude` (3 раунда × [реплика A
 + реплика B + судья] + финальный вердикт). Бэкенд добавляет ключ, делает ретраи и фоллбэк по
-цепочке моделей, проксирует в OpenRouter. Результат начисляет очки в `store`, а `bus` транслирует
-состояние боя на табло во втором окне.
+цепочке моделей, проксирует в OpenRouter. Результат сохраняется в backend (`/api/results`),
+а live-состояние боя публикуется в `/api/live` и доставляется табло через SSE.
 
 ## Что внутри
 
@@ -89,10 +92,12 @@ npm test          # юнит деградации + живой smoke-бой (н�
 ## Архитектура
 
 - Фронтенд: **Vite + React** (`src/`).
-- Бэкенд: крошечный **Express** (`server.js`) — держит ключ OpenRouter в `.env` и проксирует
-  запросы к модели (`/api/claude`, OpenAI-совместимый формат). Ключ в браузер не попадает.
-- Данные участников и очки: **localStorage**. Синхронизация между окнами арены и табло —
-  через **BroadcastChannel** (всё на одной машине).
+- Бэкенд: **Express + SQLite** (`server.js`, `db.js`) — хранит участников, очки, историю и
+  состояние турнира, держит ключ OpenRouter в `.env` и проксирует запросы к модели.
+- Фронтенд: страницы читают синхронный in-memory cache, который наполняется из backend API.
+  Старый `localStorage` используется только для одноразовой миграции старых данных.
+- Табло: турнир/рейтинг берутся из backend-backed cache, live-бой восстанавливается через
+  `/api/live` и обновляется по SSE; `BroadcastChannel` остаётся локальной быстрой инвалидацией.
 
 ## Запуск
 
