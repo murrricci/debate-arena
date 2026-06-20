@@ -56,7 +56,7 @@
 | `POST` | `/api/agents` | `X-Arena-Key` | Создать. Body `{externalId, name, skills[], custom?, config?, source:"bot"}`. `201 {agent, upgradesLeft}`; `400` валидация; `409 {error:"agent_exists", agent}`. |
 | `PATCH` | `/api/agents/by-external/:externalId` | `X-Arena-Key` | Обновить с проверкой лимита. `200 {agent, upgradesLeft}`; `403 {error:"upgrade_limit_reached", upgradesLeft:0}`; `404`. |
 | `GET` | `/api/results/by-external/:externalId` | `X-Arena-Key` | `{agent:{id,name,stats}, rank, total, history:[{opponentName, result, scoreSelf, scoreOpp, topic, tournament, at}]}` (history с `?limit=`). |
-| `GET` | `/api/agents` | открытый | Ростер для фронта/табло: `{agents:[...]}`. |
+| `GET` | `/api/agents` | открытый | Ростер для фронта/табло: `{agents:[...]}`. Поле `externalId` используется на табло как номер пользователя; если его нет, UI показывает прочерк. |
 | `GET/PATCH/DELETE` | `/api/agents/:id` | local-trusted | Операторские операции по внутреннему uuid (Register.jsx). |
 | `POST` | `/api/results` | `X-Arena-Key` | Приём результата боя от киоска. Body `{aId,bId,winner:"A|B|draw",scoreA,scoreB,topic?,tournament?}`. Сервер начисляет очки и пишет историю; `200 {a,b}`. |
 | `GET` | `/api/results/leaderboard` | открытый | `{leaderboard:[{id,name,externalId,stats,rank}]}`. |
