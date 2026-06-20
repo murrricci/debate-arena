@@ -20,6 +20,20 @@ export function historyFor(side, transcript, window) {
   return slice.map((t) => ({ role: t.side === side ? "assistant" : "user", content: t.text }));
 }
 
+function fighterSnapshot(fighter) {
+  return {
+    id: fighter.id,
+    externalId: fighter.externalId ?? null,
+    name: fighter.name,
+    skills: Array.isArray(fighter.skills) ? fighter.skills : [],
+  };
+}
+
+function tierSnapshot(tier) {
+  if (!tier) return null;
+  return { tier: tier.tier, label: tier.label, color: tier.color };
+}
+
 export async function runDebateFight({
   aF,
   bF,
@@ -72,9 +86,24 @@ export async function runDebateFight({
   let fightCost = 0;
   let modelA = "";
   let modelB = "";
+  const history = {
+    topic: { id: topic.id, title: topic.title, sideA: topic.sideA, sideB: topic.sideB },
+    stances: { A: stanceA, B: stanceB },
+    fighters: { A: fighterSnapshot(A), B: fighterSnapshot(B) },
+    rounds: [],
+    final: null,
+    metrics: {},
+  };
 
   for (let r = 1; r <= rounds; r++) {
     onEvent({ type: "round", round: r });
+    const roundHistory = {
+      round: r,
+      replies: {},
+      judge: null,
+      damage: { A: 0, B: 0 },
+      hp: { A: curHpA, B: curHpB },
+    };
 
     const mA = pickModel(tokA);
     onEvent({ type: "tier", side: "A", tier: mA });
@@ -93,6 +122,7 @@ export async function runDebateFight({
     tokA += resA.usage?.total_tokens || 0;
     if (resA.model) modelA = resA.model;
     transcript.push({ side: "A", text: replyA });
+    roundHistory.replies.A = { text: replyA, model: modelA, tier: tierSnapshot(mA) };
     onEvent({ type: "model", side: "A", model: modelA });
     onEvent({ type: "reply", side: "A", fighter: A, text: replyA, round: r, tier: mA });
     if (delay.afterReply) await waitFor(delay.afterReply);
@@ -114,6 +144,7 @@ export async function runDebateFight({
     tokB += resB.usage?.total_tokens || 0;
     if (resB.model) modelB = resB.model;
     transcript.push({ side: "B", text: replyB });
+    roundHistory.replies.B = { text: replyB, model: modelB, tier: tierSnapshot(mB) };
     onEvent({ type: "model", side: "B", model: modelB });
     onEvent({ type: "reply", side: "B", fighter: B, text: replyB, round: r, tier: mB });
     if (delay.afterReply) await waitFor(delay.afterReply);
@@ -137,6 +168,10 @@ export async function runDebateFight({
     curHpA = Math.max(0, curHpA - damageToA);
     curHpB = Math.max(0, curHpB - damageToB);
     const shake = damageToA > damageToB ? "A" : damageToB > damageToA ? "B" : null;
+    roundHistory.judge = lastJudgement;
+    roundHistory.damage = { A: damageToA, B: damageToB };
+    roundHistory.hp = { A: curHpA, B: curHpB };
+    history.rounds.push(roundHistory);
     onEvent({ type: "judge", judgement: lastJudgement, round: r, hpA: curHpA, hpB: curHpB, shake });
     if (delay.afterJudge) await waitFor(delay.afterJudge);
     onEvent({ type: "shake", side: null });
@@ -157,6 +192,15 @@ export async function runDebateFight({
   let winner = final.winner;
   if (final.score_a === final.score_b) winner = curHpA === curHpB ? "draw" : curHpA > curHpB ? "A" : "B";
   const verdict = { ...final, winner, hpA: curHpA, hpB: curHpB };
+  history.final = verdict;
+  history.metrics = {
+    tokensA: tokA,
+    tokensB: tokB,
+    llmMs,
+    fightCost,
+    modelA,
+    modelB,
+  };
   const result = {
     winner,
     scoreA: final.score_a,
@@ -172,6 +216,7 @@ export async function runDebateFight({
     fightCost,
     modelA,
     modelB,
+    history,
   };
   onEvent({ type: "verdict", verdict, result });
   onEvent({ type: "status", status: "" });

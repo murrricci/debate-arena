@@ -76,12 +76,22 @@ export function initDb(filename) {
       score_b    INTEGER NOT NULL DEFAULT 0,
       topic      TEXT,
       tournament INTEGER NOT NULL DEFAULT 0,
+      history    TEXT,
       created_at INTEGER NOT NULL
     );
   `);
+  ensureBattleColumns();
   db.exec("CREATE INDEX IF NOT EXISTS idx_battles_a ON battles(a_id);");
   db.exec("CREATE INDEX IF NOT EXISTS idx_battles_b ON battles(b_id);");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_battles_created ON battles(created_at);");
   return db;
+}
+
+function ensureBattleColumns() {
+  const columns = new Set(db.prepare("PRAGMA table_info(battles)").all().map((row) => row.name));
+  if (!columns.has("history")) {
+    db.exec("ALTER TABLE battles ADD COLUMN history TEXT;");
+  }
 }
 
 // --- транзакция (node:sqlite без better-sqlite3-хелпера .transaction) ---
@@ -115,6 +125,37 @@ function rowToParticipant(row) {
   };
 }
 
+function rowToBattle(row, { includeHistory = false } = {}) {
+  if (!row) return null;
+  const history = includeHistory ? safeParse(row.history, null) : undefined;
+  return {
+    id: row.id,
+    aId: row.a_id,
+    bId: row.b_id,
+    aName: row.a_name || row.history_a_name || "?",
+    bName: row.b_name || row.history_b_name || "?",
+    aExternalId: row.a_external_id ?? row.history_a_external_id ?? null,
+    bExternalId: row.b_external_id ?? row.history_b_external_id ?? null,
+    winner: row.winner,
+    scoreA: row.score_a,
+    scoreB: row.score_b,
+    topic: row.topic,
+    tournament: !!row.tournament,
+    at: row.created_at,
+    hasHistory: !!row.history,
+    ...(includeHistory ? { history } : {}),
+  };
+}
+
+function historyNames(history) {
+  return {
+    history_a_name: history?.fighters?.A?.name || null,
+    history_b_name: history?.fighters?.B?.name || null,
+    history_a_external_id: history?.fighters?.A?.externalId ?? null,
+    history_b_external_id: history?.fighters?.B?.externalId ?? null,
+  };
+}
+
 // --- валидация/нормализация входных данных (защита от мусора из бота) ---
 const clampNum = (v, lo, hi, def) => {
   const n = Number(v);
@@ -122,6 +163,11 @@ const clampNum = (v, lo, hi, def) => {
   return Math.min(hi, Math.max(lo, n));
 };
 const clampInt = (v, lo, hi, def) => Math.round(clampNum(v, lo, hi, def));
+
+function serializeHistory(history) {
+  if (history == null) return null;
+  return JSON.stringify(history);
+}
 
 function normalizeConfig(cfg = {}) {
   const c = { ...DEFAULT_CONFIG, ...(cfg || {}) };
@@ -226,8 +272,16 @@ export function upgradeAgent(by, patch = {}) {
   });
 }
 
+function insertBattleRow({ aId, bId, winner, scoreA = 0, scoreB = 0, topic = null, tournament = false, history = null } = {}) {
+  const info = db.prepare(`
+    INSERT INTO battles (a_id, b_id, winner, score_a, score_b, topic, tournament, history, created_at)
+    VALUES (?,?,?,?,?,?,?,?,?)
+  `).run(String(aId), String(bId), winner, scoreA | 0, scoreB | 0, topic, tournament ? 1 : 0, serializeHistory(history), Date.now());
+  return Number(info.lastInsertRowid);
+}
+
 // --- результат боя: пересчёт статистики обоих + запись в историю (одна транзакция) ---
-export function applyResult({ aId, bId, winner, scoreA = 0, scoreB = 0, topic = null, tournament = false } = {}) {
+export function applyResult({ aId, bId, winner, scoreA = 0, scoreB = 0, topic = null, tournament = false, history = null } = {}) {
   if (!["A", "B", "draw"].includes(winner)) return { error: "validation", detail: "winner" };
   return inTx(() => {
     const update = (id, role) => {
@@ -244,12 +298,59 @@ export function applyResult({ aId, bId, winner, scoreA = 0, scoreB = 0, topic = 
     };
     const a = update(aId, "A");
     const b = update(bId, "B");
-    db.prepare(`
-      INSERT INTO battles (a_id, b_id, winner, score_a, score_b, topic, tournament, created_at)
-      VALUES (?,?,?,?,?,?,?,?)
-    `).run(String(aId), String(bId), winner, scoreA | 0, scoreB | 0, topic, tournament ? 1 : 0, Date.now());
-    return { a, b };
+    const battleId = insertBattleRow({ aId, bId, winner, scoreA, scoreB, topic, tournament, history });
+    return { a, b, battleId };
   });
+}
+
+// --- запись боя без начисления очков: используется турнирной историей ---
+export function recordBattle({ aId, bId, winner, scoreA = 0, scoreB = 0, topic = null, tournament = false, history = null } = {}) {
+  if (!["A", "B", "draw"].includes(winner)) return { error: "validation", detail: "winner" };
+  return inTx(() => {
+    const battleId = insertBattleRow({ aId, bId, winner, scoreA, scoreB, topic, tournament, history });
+    return { battleId };
+  });
+}
+
+export function getBattle(id) {
+  const row = db.prepare(`
+    SELECT bt.*, a.name AS a_name, b.name AS b_name, a.external_id AS a_external_id, b.external_id AS b_external_id
+    FROM battles bt
+    LEFT JOIN agents a ON a.id = bt.a_id
+    LEFT JOIN agents b ON b.id = bt.b_id
+    WHERE bt.id = ?
+  `).get(id);
+  if (!row) return null;
+  const parsed = safeParse(row.history, null);
+  return rowToBattle({ ...row, ...historyNames(parsed) }, { includeHistory: true });
+}
+
+export function listBattles({ query = "", limit = 50 } = {}) {
+  const lim = Math.max(1, Math.min(500, limit | 0));
+  const q = String(query ?? "").trim().replace(/^#/, "").toLowerCase();
+  const rows = db.prepare(`
+    SELECT bt.*, a.name AS a_name, b.name AS b_name, a.external_id AS a_external_id, b.external_id AS b_external_id
+    FROM battles bt
+    LEFT JOIN agents a ON a.id = bt.a_id
+    LEFT JOIN agents b ON b.id = bt.b_id
+    ORDER BY bt.created_at DESC, bt.id DESC
+    LIMIT ?
+  `).all(q ? 500 : lim);
+  const mapped = rows.map((row) => {
+    const parsed = safeParse(row.history, null);
+    return rowToBattle({ ...row, ...historyNames(parsed) });
+  });
+  if (!q) return mapped;
+  return mapped.filter((bt) => {
+    const haystack = [
+      bt.aName,
+      bt.bName,
+      bt.aExternalId,
+      bt.bExternalId,
+      bt.topic,
+    ].map((v) => String(v ?? "").toLowerCase());
+    return haystack.some((v) => v.includes(q));
+  }).slice(0, lim);
 }
 
 // --- таблица / место / история ---
@@ -265,13 +366,14 @@ export function userResults(by, { limit = 50 } = {}) {
   const rank = board.findIndex((p) => p.id === agent.id) + 1;
   const names = Object.fromEntries(listAgents().map((p) => [p.id, p.name]));
   const rows = db.prepare(
-    "SELECT * FROM battles WHERE a_id = ? OR b_id = ? ORDER BY created_at DESC LIMIT ?"
+    "SELECT * FROM battles WHERE tournament = 0 AND (a_id = ? OR b_id = ?) ORDER BY created_at DESC LIMIT ?"
   ).all(agent.id, agent.id, Math.max(1, Math.min(500, limit | 0)));
   const history = rows.map((bt) => {
     const self = bt.a_id === agent.id ? "A" : "B";
     const oppId = self === "A" ? bt.b_id : bt.a_id;
     return {
       opponentName: names[oppId] || "?",
+      battleId: bt.id,
       result: bt.winner === "draw" ? "draw" : bt.winner === self ? "win" : "loss",
       scoreSelf: self === "A" ? bt.score_a : bt.score_b,
       scoreOpp: self === "A" ? bt.score_b : bt.score_a,

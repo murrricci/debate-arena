@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
+import { Link } from "react-router-dom";
 import { styles, C } from "../styles.js";
 import { getParticipants, applyResult, canPlayWarmup, MAX_WARMUP_BATTLES } from "../lib/store.js";
 import { getTournament } from "../lib/tournament.js";
@@ -9,6 +10,7 @@ import { MODEL_TIERS } from "../lib/models.js";
 import { pickSprite } from "../data/sprites.js";
 import { filterFighters, fighterOptionLabel } from "../lib/fighterSearch.js";
 import { runDebateFight } from "../lib/fightRunner.js";
+import { historyWithMode } from "../lib/battleHistory.js";
 import PixelFighter from "../components/PixelFighter.jsx";
 import PixelArena from "../components/PixelArena.jsx";
 
@@ -28,6 +30,8 @@ export default function Arena() {
   const [round, setRound] = useState(0);
   const [status, setStatus] = useState("");
   const [verdict, setVerdict] = useState(null);
+  const [battleId, setBattleId] = useState(null);
+  const [historyError, setHistoryError] = useState("");
   const [shake, setShake] = useState(null);
   const [error, setError] = useState("");
   // Текущая ступень (тир) каждого бойца — деградирует по мере расхода токенов.
@@ -38,6 +42,7 @@ export default function Arena() {
   const [modelB, setModelB] = useState("");
   const [tour, setTour] = useState(getTournament());
   const logRef = useRef(null);
+  const fightSeqRef = useRef(0);
 
   useEffect(() =>
     subscribe((type) => {
@@ -99,6 +104,7 @@ export default function Arena() {
     const faceA = fighterFace(A);
     const faceB = fighterFace(B);
     const fightStart = performance.now();
+    const fightSeq = ++fightSeqRef.current;
 
     try {
       const result = await runDebateFight({
@@ -114,6 +120,8 @@ export default function Arena() {
             setHpB(100);
             setLog([]);
             setVerdict(null);
+            setBattleId(null);
+            setHistoryError("");
             setTierA(event.tierA);
             setTierB(event.tierB);
             setModelA("");
@@ -157,7 +165,22 @@ export default function Arena() {
       console.log(`[БОЙ] всего ${wallMs}мс · LLM ${llm}мс (${Math.round((llm / wallMs) * 100)}%) · паузы UX ${wallMs - llm}мс · ₽${result.fightCost.toFixed(2)}`);
 
       // Начисляем очки только в зачёт разминки. Турнир хранит отдельную таблицу.
-      applyResult({ aId: A.id, bId: B.id, winner: result.winner, scoreA: result.scoreA, scoreB: result.scoreB, topic: topic.title, tournament: false });
+      applyResult({
+        aId: A.id,
+        bId: B.id,
+        winner: result.winner,
+        scoreA: result.scoreA,
+        scoreB: result.scoreB,
+        topic: topic.title,
+        tournament: false,
+        history: historyWithMode(result.history, "warmup"),
+        onSaved: (saved) => {
+          if (fightSeqRef.current === fightSeq && saved?.battleId) setBattleId(saved.battleId);
+        },
+        onError: () => {
+          if (fightSeqRef.current === fightSeq) setHistoryError("История боя не сохранилась");
+        },
+      });
       setPeople(getParticipants());
     } catch (e) {
       setError("Бой прерван: " + e.message);
@@ -182,8 +205,8 @@ export default function Arena() {
 
   return (
     <Ring
-      {...{ A, B, hpA, hpB, log, round, status, shake, verdict, logRef, topic, stanceA, stanceB, tierA, tierB, modelA, modelB }}
-      onRematch={() => { setPhase("select"); setVerdict(null); }}
+      {...{ A, B, hpA, hpB, log, round, status, shake, verdict, battleId, historyError, logRef, topic, stanceA, stanceB, tierA, tierB, modelA, modelB }}
+      onRematch={() => { setPhase("select"); setVerdict(null); setBattleId(null); setHistoryError(""); }}
     />
   );
 }
@@ -420,7 +443,7 @@ function Versus({ A, B, stanceA, stanceB, topic }) {
 }
 
 /* ---------- Ринг ---------- */
-function Ring({ A, B, hpA, hpB, log, round, status, shake, verdict, logRef, topic, stanceA, stanceB, tierA, tierB, modelA, modelB, onRematch }) {
+function Ring({ A, B, hpA, hpB, log, round, status, shake, verdict, battleId, historyError, logRef, topic, stanceA, stanceB, tierA, tierB, modelA, modelB, onRematch }) {
   const colorA = fighterColor(A, C.red);
   const colorB = fighterColor(B, C.blue);
 
@@ -488,7 +511,15 @@ function Ring({ A, B, hpA, hpB, log, round, status, shake, verdict, logRef, topi
             <span style={{ color: colorB }}>{B.name}: {verdict.score_b}</span>
           </div>
           <div style={styles.rationale}>«{verdict.rationale}»</div>
-          <button style={{ ...styles.btn, marginTop: 16 }} onClick={onRematch}>↻ НОВЫЙ БОЙ</button>
+          <div style={{ display: "flex", gap: 10, justifyContent: "center", flexWrap: "wrap", marginTop: 16 }}>
+            {battleId && (
+              <Link to={`/battles/${battleId}`} style={{ ...styles.btnGhost, textDecoration: "none", color: C.yellow, borderColor: C.yellow }}>
+                ХОД БОЯ
+              </Link>
+            )}
+            <button style={styles.btn} onClick={onRematch}>↻ НОВЫЙ БОЙ</button>
+          </div>
+          {historyError && <div style={{ marginTop: 10, color: C.danger, fontSize: 12, fontWeight: 900 }}>{historyError}</div>}
         </div>
       )}
     </div>

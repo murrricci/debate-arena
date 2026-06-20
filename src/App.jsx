@@ -6,6 +6,8 @@ import Register from "./pages/Register.jsx";
 import Tournament from "./pages/Tournament.jsx";
 import Scoreboard from "./pages/Scoreboard.jsx";
 import Guide from "./pages/Guide.jsx";
+import Battles from "./pages/Battles.jsx";
+import BattleDetail from "./pages/BattleDetail.jsx";
 
 export default function App() {
   const location = useLocation();
@@ -31,6 +33,7 @@ export default function App() {
             <Nav to="/" label="🥊 АРЕНА" />
             <Nav to="/register" label="📝 УЧАСТНИКИ" />
             <Nav to="/tournament" label="🏆 ТУРНИР" />
+            <Nav to="/battles" label="📜 ИСТОРИЯ" />
             <Nav to="/guide" label="📖 ИНСТРУКЦИЯ" />
             <BoardLink />
           </nav>
@@ -41,6 +44,8 @@ export default function App() {
         <Route path="/" element={<Arena />} />
         <Route path="/register" element={<Register />} />
         <Route path="/tournament" element={<Tournament />} />
+        <Route path="/battles" element={<Battles />} />
+        <Route path="/battles/:id" element={<BattleDetail />} />
         <Route path="/guide" element={<Guide />} />
         <Route path="/scoreboard" element={<Scoreboard />} />
       </Routes>

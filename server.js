@@ -25,7 +25,7 @@ dotenv.config();
 
 const app = express();
 app.use(cors());
-app.use(express.json({ limit: "1mb" }));
+app.use(express.json({ limit: "4mb" }));
 
 // Хранилище агентов и результатов (node:sqlite). Источник правды для всей арены.
 agents.initDb();
@@ -370,7 +370,27 @@ app.delete("/api/agents/:id", requireArenaKey, (req, res) => {
 app.post("/api/results", requireArenaKey, (req, res) => {
   const r = agents.applyResult(req.body || {});
   if (r.error === "validation") return res.status(400).json({ error: "validation", detail: r.detail });
-  res.json({ a: r.a, b: r.b });
+  res.json({ a: r.a, b: r.b, battleId: r.battleId });
+});
+
+// --- история боёв ---
+app.get("/api/battles", (req, res) => {
+  const limit = Number(req.query.limit) || 50;
+  const query = typeof req.query.query === "string" ? req.query.query : "";
+  res.json({ battles: agents.listBattles({ query, limit }) });
+});
+
+app.get("/api/battles/:id", (req, res) => {
+  const battle = agents.getBattle(req.params.id);
+  if (!battle) return res.status(404).json({ error: "not_found" });
+  res.json(battle);
+});
+
+// Турнирные матчи сохраняются отдельно от разминки: очки агентов здесь не пересчитываются.
+app.post("/api/battles", requireArenaKey, (req, res) => {
+  const r = agents.recordBattle(req.body || {});
+  if (r.error === "validation") return res.status(400).json({ error: "validation", detail: r.detail });
+  res.status(201).json({ battleId: r.battleId });
 });
 
 // --- сброс очков (перед стартом турнира / ручной сброс на табло) ---
