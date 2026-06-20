@@ -4,7 +4,7 @@
 // и тесты не меняются, а данные переживают перезапуск и видны из бота.
 //
 // В Node (юнит-тесты) сети нет — модуль работает как чистый localStorage-кэш, как прежде.
-import { publish } from "./bus.js";
+import { publish, subscribe } from "./bus.js";
 import { nextStats, sortLeaderboard, emptyStats, MAX_UPGRADES } from "./scoring.js";
 
 export { MAX_UPGRADES };
@@ -31,6 +31,10 @@ function persist() {
 function setCache(next) {
   cache = next;
   persist();
+}
+function replaceCache(next) {
+  if (!Array.isArray(next)) return;
+  cache = next;
 }
 
 // --- сетевой слой (только браузер) ---
@@ -198,4 +202,14 @@ if (inBrowser) {
     await syncFromServer();
     setInterval(syncFromServer, POLL_MS);
   })();
+}
+
+subscribe((type, payload) => {
+  if (type === "participants") replaceCache(payload);
+});
+
+if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+  window.addEventListener("storage", (event) => {
+    if (!event.key || event.key === KEY) replaceCache(readLS());
+  });
 }

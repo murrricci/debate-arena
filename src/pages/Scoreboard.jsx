@@ -4,6 +4,7 @@ import { leaderboard, resetScores } from "../lib/store.js";
 import { fighterFace } from "../lib/agent.js";
 import { subscribe } from "../lib/bus.js";
 import { getTournament, standings, progress } from "../lib/tournament.js";
+import { isTournamentMode, scoreboardTitle, tournamentStateFromEvent } from "../lib/scoreboardState.js";
 
 const MEDALS = ["🥇", "🥈", "🥉"];
 
@@ -17,7 +18,7 @@ export default function Scoreboard() {
   useEffect(() =>
     subscribe((type, payload) => {
       if (type === "participants") force((n) => n + 1);
-      if (type === "tournament") setTour(getTournament());
+      if (type === "tournament") setTour((current) => tournamentStateFromEvent(current, type, payload));
       if (type === "live") setLive(payload);
     }), []);
 
@@ -27,7 +28,7 @@ export default function Scoreboard() {
     return () => window.removeEventListener("storage", h);
   }, []);
 
-  const inTournament = tour.status !== "idle";
+  const inTournament = isTournamentMode(tour);
   const rows = inTournament ? standings() : leaderboard();
   const { played, total } = progress();
   const showLive = live && live.phase !== "select";
@@ -37,7 +38,7 @@ export default function Scoreboard() {
       <div style={S.scan} />
       <header style={S.header}>
         <h1 style={S.title}>
-          🏆 <span style={{ color: C.yellow }}>{inTournament ? "ТУРНИРНАЯ ТАБЛИЦА" : "РЕЙТИНГ РАЗМИНКИ"}</span>
+          🏆 <span style={{ color: C.yellow }}>{scoreboardTitle(tour)}</span>
         </h1>
         {inTournament && (
           <div style={S.sub}>
