@@ -13,7 +13,7 @@ const DEFAULT = {
   status: "idle", // idle → ready → running → done
   closed: false, // приём заявок закрыт
   roster: [], // зафиксированные id участников (топ-10)
-  matches: [], // [{ id, index, a, b, topicId, status, winner, scoreA, scoreB }]
+  matches: [], // [{ id, index, a, b, topicId, stage, tiebreakRound, status, winner, scoreA, scoreB }]
   statsById: {}, // отдельная турнирная статистика по id участника
   cursor: 0, // индекс текущего матча
 };
@@ -36,32 +36,41 @@ export function isRegistrationClosed() {
   return getTournament().closed;
 }
 
+function makeMatch({ index, a, b, stage = "main", tiebreakRound = null }) {
+  return {
+    id: `m-${index}`,
+    index,
+    a,
+    b,
+    topicId: randomTopic().id,
+    stage,
+    tiebreakRound,
+    status: "queued",
+    played: false,
+    winner: null,
+    scoreA: 0,
+    scoreB: 0,
+    battleId: null,
+    error: "",
+    retryOf: null,
+    attempt: 1,
+    supersededBy: null,
+  };
+}
+
 // Круговое расписание (метод многоугольника). Возвращает список пар id.
-function roundRobin(ids) {
+function roundRobin(ids, { startIndex = 1, stage = "main", tiebreakRound = null } = {}) {
   const arr = [...ids];
   if (arr.length % 2) arr.push(null); // болван для нечётного числа
   const n = arr.length;
   const rounds = [];
+  let nextIndex = startIndex;
   for (let r = 0; r < n - 1; r++) {
     for (let i = 0; i < n / 2; i++) {
       const a = arr[i];
       const b = arr[n - 1 - i];
       if (a && b) {
-        const index = rounds.length + 1;
-        rounds.push({
-          id: `m-${index}`,
-          index,
-          a,
-          b,
-          topicId: randomTopic().id,
-          status: "queued",
-          played: false,
-          winner: null,
-          scoreA: 0,
-          scoreB: 0,
-          battleId: null,
-          error: "",
-        });
+        rounds.push(makeMatch({ index: nextIndex++, a, b, stage, tiebreakRound }));
       }
     }
     // ротация (первый зафиксирован)
@@ -104,6 +113,25 @@ export function queuedMatchesToStart(matches = [], limit = MAX_TOURNAMENT_CONCUR
   return matches.filter((m) => m.status === "queued").slice(0, slots);
 }
 
+export function visibleTournamentMatches(matches = []) {
+  return matches.filter((m) => m.status === "running");
+}
+
+function isSupersededError(match) {
+  return match.status === "error" && Boolean(match.supersededBy);
+}
+
+function isResolvedMatch(match) {
+  return match.status === "done" || isSupersededError(match);
+}
+
+export function tournamentFightCounts(matches = []) {
+  const current = matches.filter((m) => !isSupersededError(m));
+  const played = current.filter((m) => m.status === "done").length;
+  const remaining = current.length - played;
+  return { played, remaining, total: current.length };
+}
+
 export function startTournament(t = getTournament()) {
   return t.status === "ready" ? { ...t, status: "running" } : t;
 }
@@ -119,11 +147,34 @@ export function markTournamentMatchesRunning(t, matchIds = []) {
 }
 
 export function recordTournamentMatchError(t, { matchId, error }) {
+  const match = t.matches.find((m) => m.id === matchId);
+  if (!match) return t;
+  if (match.status === "error" && match.supersededBy) return t;
+  const retry = {
+    ...makeMatch({
+      index: maxMatchIndex(t.matches) + 1,
+      a: match.a,
+      b: match.b,
+      stage: match.stage || "main",
+      tiebreakRound: match.tiebreakRound ?? null,
+    }),
+    topicId: match.topicId,
+    retryOf: match.retryOf || match.id,
+    attempt: (match.attempt || 1) + 1,
+  };
+  const matches = [
+    ...t.matches.map((m) =>
+      m.id === matchId
+        ? { ...m, status: "error", error: String(error || "Ошибка боя"), supersededBy: retry.id }
+        : m
+    ),
+    retry,
+  ];
+  const cursor = matches.findIndex((m) => !isResolvedMatch(m));
   return {
     ...t,
-    matches: t.matches.map((m) =>
-      m.id === matchId ? { ...m, status: "error", error: String(error || "Ошибка боя") } : m
-    ),
+    matches,
+    cursor: cursor === -1 ? matches.length : cursor,
   };
 }
 
@@ -143,6 +194,24 @@ function initialStatsById(roster) {
   return Object.fromEntries(roster.map((id) => [id, emptyStats()]));
 }
 
+function maxMatchIndex(matches = []) {
+  return matches.reduce((max, m) => Math.max(max, m.index || 0), 0);
+}
+
+function nextTiebreakRound(matches = []) {
+  return matches.reduce((max, m) => Math.max(max, m.tiebreakRound || 0), 0) + 1;
+}
+
+function leadersByPoints(roster = [], statsById = {}) {
+  if (!roster.length) return [];
+  let maxPoints = -Infinity;
+  for (const id of roster) {
+    const points = statsById[id]?.points || 0;
+    if (points > maxPoints) maxPoints = points;
+  }
+  return roster.filter((id) => (statsById[id]?.points || 0) === maxPoints);
+}
+
 export function recordTournamentMatchResult(t, { matchId, winner, scoreA = 0, scoreB = 0, battleId = null }) {
   const match = t.matches.find((m) => m.id === matchId);
   if (!match) return t;
@@ -152,9 +221,25 @@ export function recordTournamentMatchResult(t, { matchId, winner, scoreA = 0, sc
   const matches = t.matches.map((m) =>
     m.id === matchId ? { ...m, status: "done", played: true, winner, scoreA, scoreB, battleId, error: "" } : m
   );
-  const status = matches.every((m) => m.status === "done") ? "done" : t.status === "idle" ? "ready" : t.status;
-  const cursor = matches.findIndex((m) => m.status !== "done" && m.status !== "error");
-  return { ...t, matches, statsById, status, cursor: cursor === -1 ? matches.length : cursor };
+  let nextMatches = matches;
+  let status = t.status === "idle" ? "ready" : t.status;
+  if (matches.every(isResolvedMatch)) {
+    const leaders = leadersByPoints(t.roster, statsById);
+    if (leaders.length > 1) {
+      const tiebreakRound = nextTiebreakRound(matches);
+      const extra = roundRobin(leaders, {
+        startIndex: maxMatchIndex(matches) + 1,
+        stage: "tiebreak",
+        tiebreakRound,
+      });
+      nextMatches = [...matches, ...extra];
+      status = "running";
+    } else {
+      status = "done";
+    }
+  }
+  const cursor = nextMatches.findIndex((m) => !isResolvedMatch(m));
+  return { ...t, matches: nextMatches, statsById, status, cursor: cursor === -1 ? nextMatches.length : cursor };
 }
 
 export function tournamentStandings(t, people = getParticipants()) {
@@ -225,6 +310,5 @@ export function standings() {
 
 export function progress() {
   const t = getTournament();
-  const played = t.matches.filter((m) => m.status === "done").length;
-  return { played, total: t.matches.length };
+  return tournamentFightCounts(t.matches);
 }

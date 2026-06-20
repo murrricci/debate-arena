@@ -5,6 +5,7 @@ import { fetchBattles } from "../lib/battleHistory.js";
 
 export default function Battles() {
   const [query, setQuery] = useState("");
+  const [onlyTournament, setOnlyTournament] = useState(false);
   const [battles, setBattles] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -14,7 +15,7 @@ export default function Battles() {
     setLoading(true);
     setError("");
     const timer = window.setTimeout(() => {
-      fetchBattles({ query, limit: 100 })
+      fetchBattles({ query, limit: 100, tournamentOnly: onlyTournament })
         .then((items) => { if (alive) setBattles(items); })
         .catch((e) => { if (alive) setError(e.message); })
         .finally(() => { if (alive) setLoading(false); });
@@ -23,7 +24,7 @@ export default function Battles() {
       alive = false;
       window.clearTimeout(timer);
     };
-  }, [query]);
+  }, [query, onlyTournament]);
 
   return (
     <div className="fade-in" style={{ maxWidth: 1120, margin: "0 auto" }}>
@@ -31,17 +32,28 @@ export default function Battles() {
 
       <div style={{ ...styles.panel, marginBottom: 16 }}>
         <label style={styles.label}>ПОИСК ПО ИМЕНИ ИЛИ #НОМЕРУ ПОЛЬЗОВАТЕЛЯ</label>
-        <input
-          style={styles.input}
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Ник или #номер пользователя"
-        />
+        <div style={H.filters}>
+          <input
+            style={{ ...styles.input, flex: "1 1 360px", minWidth: 0 }}
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Ник или #номер пользователя"
+          />
+          <label style={{ ...H.toggle, borderColor: onlyTournament ? C.yellow : C.border, color: onlyTournament ? C.yellow : C.muted }}>
+            <input
+              type="checkbox"
+              checked={onlyTournament}
+              onChange={(e) => setOnlyTournament(e.target.checked)}
+              style={H.checkbox}
+            />
+            <span>ТОЛЬКО ТУРНИРНЫЕ</span>
+          </label>
+        </div>
       </div>
 
       {error && <div style={{ ...styles.panel, borderColor: C.danger, color: C.danger, fontWeight: 900 }}>{error}</div>}
       {loading && <div style={styles.empty}>Загрузка...</div>}
-      {!loading && !error && battles.length === 0 && <div style={styles.empty}>Боёв не найдено.</div>}
+      {!loading && !error && battles.length === 0 && <div style={styles.empty}>{onlyTournament ? "Турнирные бои не найдены." : "Боёв не найдено."}</div>}
 
       <div style={H.list}>
         {battles.map((battle) => (
@@ -98,6 +110,24 @@ export function resultLabel(battle) {
 }
 
 const H = {
+  filters: { display: "flex", gap: 10, alignItems: "stretch", flexWrap: "wrap" },
+  toggle: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    border: "2px solid",
+    borderRadius: 8,
+    padding: "0 14px",
+    minHeight: 46,
+    fontSize: 12,
+    fontWeight: 900,
+    letterSpacing: 1,
+    cursor: "pointer",
+    background: C.card,
+    userSelect: "none",
+  },
+  checkbox: { width: 16, height: 16, accentColor: C.yellow, cursor: "pointer" },
   list: { display: "grid", gap: 10 },
   row: {
     ...styles.panel,

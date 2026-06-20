@@ -23,14 +23,20 @@ export async function saveTournamentBattle({ A, B, topic, result, match }) {
       scoreB: result.scoreB,
       topic: topic.title,
       tournament: true,
-      history: historyWithMode(result.history, "tournament", { matchId: match?.id ?? null, matchIndex: match?.index ?? null }),
+      history: historyWithMode(result.history, "tournament", {
+        matchId: match?.id ?? null,
+        matchIndex: match?.index ?? null,
+        matchStage: match?.stage ?? "main",
+        tiebreakRound: match?.tiebreakRound ?? null,
+      }),
     }),
   });
 }
 
-export async function fetchBattles({ query = "", limit = 100 } = {}) {
+export async function fetchBattles({ query = "", limit = 100, tournamentOnly = false } = {}) {
   const params = new URLSearchParams();
   if (query.trim()) params.set("query", query.trim());
+  if (tournamentOnly) params.set("tournament", "1");
   params.set("limit", String(limit));
   const data = await request(`/api/battles?${params.toString()}`);
   return Array.isArray(data?.battles) ? data.battles : [];

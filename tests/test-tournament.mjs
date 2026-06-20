@@ -18,7 +18,8 @@ const { addParticipant, applyResult, leaderboard, upgradeParticipant, MAX_UPGRAD
 const {
   closeAndStart, getTournament, currentMatch, recordMatchResult, standings, progress, TOP_N, resetTournament,
   selectTournamentRoster, queuedMatchesToStart, recordTournamentMatchResult, tournamentStandings, MAX_TOURNAMENT_CONCURRENCY,
-  startTournament, markTournamentMatchesRunning, recordTournamentMatchError,
+  startTournament, markTournamentMatchesRunning, recordTournamentMatchError, visibleTournamentMatches,
+  tournamentFightCounts,
 } = await import("../src/lib/tournament.js");
 
 let passed = 0, failed = 0;
@@ -102,6 +103,20 @@ const queue = Array.from({ length: 12 }, (_, i) => ({ id: `m-${i}`, status: i < 
 const toStart = queuedMatchesToStart(queue, MAX_TOURNAMENT_CONCURRENCY);
 check("планировщик не превышает лимит 9 активных матчей", toStart.length === 7);
 check("планировщик берёт первые queued-матчи", toStart[0].id === "m-2" && toStart.at(-1).id === "m-8");
+check("сетка плашек показывает только текущие running-матчи", visibleTournamentMatches([
+  { id: "done", status: "done" },
+  { id: "queued", status: "queued" },
+  { id: "running-1", status: "running" },
+  { id: "error", status: "error" },
+  { id: "running-2", status: "running" },
+]).map((m) => m.id).join("|") === "running-1|running-2");
+const countView = typeof tournamentFightCounts === "function" ? tournamentFightCounts([
+  { id: "done", status: "done" },
+  { id: "running", status: "running" },
+  { id: "error", status: "error", supersededBy: "retry" },
+  { id: "retry", status: "queued", retryOf: "error" },
+]) : null;
+check("счётчик турнира показывает проведено и осталось без ошибочных попыток", countView?.played === 1 && countView?.remaining === 2 && countView?.total === 3);
 
 // 7. Состояния матчей для UI-очереди.
 const runningTour = startTournament({ ...t, status: "ready" });
@@ -110,6 +125,11 @@ const marked = markTournamentMatchesRunning(runningTour, ["m-1", "m-2"]);
 check("markTournamentMatchesRunning отмечает выбранные queued как running", marked.matches.filter((m) => m.status === "running").length === 2);
 const errored = recordTournamentMatchError(marked, { matchId: "m-1", error: "LLM упал" });
 check("recordTournamentMatchError пишет status=error и текст", errored.matches[0].status === "error" && errored.matches[0].error === "LLM упал");
+const retry = errored.matches.find((m) => m.retryOf === "m-1");
+check("ошибочный матч добавляется в очередь заново", !!retry && retry.status === "queued" && retry.a === marked.matches[0].a && retry.b === marked.matches[0].b && retry.topicId === marked.matches[0].topicId);
+check("ошибочная попытка ссылается на повтор", !!retry && errored.matches[0].supersededBy === retry.id);
+const afterErrorCounts = typeof tournamentFightCounts === "function" ? tournamentFightCounts(errored.matches) : null;
+check("повтор не увеличивает число обязательных боёв турнира", afterErrorCounts?.played === 0 && afterErrorCounts?.remaining === expectedMatches && afterErrorCounts?.total === expectedMatches);
 
 // 8. Запись результата отдельного матча обновляет отдельный турнирный лидерборд.
 const miniTour = {
@@ -122,7 +142,70 @@ const miniRows = tournamentStandings(recorded, [{ id: "a", name: "A" }, { id: "b
 check("результат матча пишет winner и status=done", recorded.matches[0].winner === "A" && recorded.matches[0].status === "done");
 check("турнирный лидерборд считает очки отдельно", miniRows[0].id === "a" && miniRows[0].tourStats.points === 4 && miniRows[1].tourStats.points === 0);
 
-// 9. Сброс турнира.
+let retryMini = recordTournamentMatchError({
+  status: "running",
+  roster: ["a", "b"],
+  statsById: {},
+  matches: [{ id: "m-1", index: 1, a: "a", b: "b", topicId: "logic", stage: "main", tiebreakRound: null, status: "running", winner: null, scoreA: 0, scoreB: 0 }],
+}, { matchId: "m-1", error: "LLM упал" });
+const retryMiniMatch = retryMini.matches.find((m) => m.retryOf === "m-1");
+if (retryMiniMatch) {
+  retryMini = recordTournamentMatchResult(retryMini, { matchId: retryMiniMatch.id, winner: "A", scoreA: 80, scoreB: 60 });
+}
+check("результат повторного матча завершает турнир", !!retryMiniMatch && retryMini.status === "done" && retryMini.matches[0].status === "error" && retryMini.matches[1].status === "done");
+
+// 9. Тай-брейк: уникальный лидер завершает турнир без дополнительных матчей.
+const decisiveTour = {
+  status: "running",
+  roster: ["a", "b"],
+  statsById: {},
+  matches: [{ id: "m-1", index: 1, a: "a", b: "b", stage: "main", tiebreakRound: null, status: "running", winner: null, scoreA: 0, scoreB: 0 }],
+};
+const decisive = recordTournamentMatchResult(decisiveTour, { matchId: "m-1", winner: "A", scoreA: 80, scoreB: 60 });
+check("уникальный лидер после круга завершает турнир", decisive.status === "done" && decisive.matches.length === 1);
+
+// 10. Тай-брейк: если первое место делят несколько участников, добавляется новый круг между лидерами.
+let tiedTour = {
+  status: "running",
+  roster: ["a", "b", "c"],
+  statsById: {},
+  matches: [
+    { id: "m-1", index: 1, a: "a", b: "b", stage: "main", tiebreakRound: null, status: "running", winner: null, scoreA: 0, scoreB: 0 },
+    { id: "m-2", index: 2, a: "a", b: "c", stage: "main", tiebreakRound: null, status: "running", winner: null, scoreA: 0, scoreB: 0 },
+    { id: "m-3", index: 3, a: "b", b: "c", stage: "main", tiebreakRound: null, status: "running", winner: null, scoreA: 0, scoreB: 0 },
+  ],
+};
+tiedTour = recordTournamentMatchResult(tiedTour, { matchId: "m-1", winner: "draw", scoreA: 50, scoreB: 50 });
+tiedTour = recordTournamentMatchResult(tiedTour, { matchId: "m-2", winner: "draw", scoreA: 50, scoreB: 50 });
+tiedTour = recordTournamentMatchResult(tiedTour, { matchId: "m-3", winner: "draw", scoreA: 50, scoreB: 50 });
+const tb1 = tiedTour.matches.filter((m) => m.stage === "tiebreak" && m.tiebreakRound === 1);
+check("ничья лидеров добавляет дополнительный круг", tiedTour.status === "running" && tb1.length === 3);
+check("матчи тай-брейка получают сквозные индексы", tb1.every((m) => m.index > 3 && m.id === `m-${m.index}`));
+
+const matchByPair = (tourState, a, b, round) =>
+  tourState.matches.find((m) => m.tiebreakRound === round && new Set([m.a, m.b]).size === 2 && [m.a, m.b].includes(a) && [m.a, m.b].includes(b));
+
+const ab = matchByPair(tiedTour, "a", "b", 1);
+const bc = matchByPair(tiedTour, "b", "c", 1);
+const ac = matchByPair(tiedTour, "a", "c", 1);
+check("первый дополнительный круг содержит все пары лидеров", !!ab && !!bc && !!ac);
+if (ab && bc && ac) {
+  tiedTour = recordTournamentMatchResult(tiedTour, { matchId: ab.id, winner: ab.a === "a" ? "A" : "B", scoreA: ab.a === "a" ? 80 : 60, scoreB: ab.b === "a" ? 80 : 60 });
+  tiedTour = recordTournamentMatchResult(tiedTour, { matchId: bc.id, winner: bc.a === "c" ? "A" : "B", scoreA: bc.a === "c" ? 80 : 60, scoreB: bc.b === "c" ? 80 : 60 });
+  tiedTour = recordTournamentMatchResult(tiedTour, { matchId: ac.id, winner: "draw", scoreA: 50, scoreB: 50 });
+}
+const tb2 = tiedTour.matches.filter((m) => m.stage === "tiebreak" && m.tiebreakRound === 2);
+check("повторная ничья создаёт следующий круг только между текущими лидерами", tb2.length === 1 && [tb2[0].a, tb2[0].b].sort().join("|") === "a|c");
+check("отставший после тай-брейка не попадает в следующий круг", tb2.length === 1 && ![tb2[0].a, tb2[0].b].includes("b"));
+
+const finalTb = tb2[0];
+if (finalTb) {
+  tiedTour = recordTournamentMatchResult(tiedTour, { matchId: finalTb.id, winner: finalTb.a === "a" ? "A" : "B", scoreA: finalTb.a === "a" ? 80 : 60, scoreB: finalTb.b === "a" ? 80 : 60 });
+}
+const finalRows = tournamentStandings(tiedTour, [{ id: "a", name: "A" }, { id: "b", name: "B" }, { id: "c", name: "C" }]);
+check("турнир завершается после уникального победителя тай-брейка", tiedTour.status === "done" && finalRows[0].id === "a");
+
+// 11. Сброс турнира.
 const reset = resetTournament();
 check("сброс турнира → idle и приём открыт", reset.status === "idle" && reset.closed === false);
 

@@ -7,12 +7,13 @@ import { subscribe } from "../lib/bus.js";
 import {
   getTournament,
   standings,
-  progress,
   beginTournament,
   markMatchesRunning,
   recordMatchResult,
   recordMatchError,
   queuedMatchesToStart,
+  visibleTournamentMatches,
+  tournamentFightCounts,
   MAX_TOURNAMENT_CONCURRENCY,
 } from "../lib/tournament.js";
 import { TOPICS } from "../data/topics.js";
@@ -49,9 +50,11 @@ export default function Tournament() {
   const byId = useMemo(() => Object.fromEntries(people.map((p) => [p.id, p])), [people]);
   const topicById = useMemo(() => Object.fromEntries(TOPICS.map((t) => [t.id, t])), []);
   const rows = standings();
-  const { played, total } = progress();
+  const { played, remaining, total } = tournamentFightCounts(tour.matches);
   const activeCount = tour.matches.filter((m) => m.status === "running").length;
   const errorCount = tour.matches.filter((m) => m.status === "error").length;
+  const activeTiebreak = activeTiebreakRound(tour);
+  const liveMatches = visibleTournamentMatches(tour.matches);
 
   useEffect(() => {
     if (tour.status !== "running") return;
@@ -87,10 +90,13 @@ export default function Tournament() {
 
   return (
     <div className="fade-in" style={{ maxWidth: 1320, margin: "0 auto" }}>
-      <p style={styles.sectionLabel}>🏆 ТУРНИР · ВСЕ СО ВСЕМИ</p>
+      <p style={styles.sectionLabel}>🏆 ТУРНИР · {activeTiebreak ? `ДОП. КРУГ ${activeTiebreak}` : "ВСЕ СО ВСЕМИ"}</p>
 
       {tour.status === "done" && (
         <div style={T.done}>ТУРНИР ЗАВЕРШЁН</div>
+      )}
+      {activeTiebreak && (
+        <div style={T.tiebreakBanner}>ТАЙ-БРЕЙК · ДОПОЛНИТЕЛЬНЫЙ КРУГ {activeTiebreak}</div>
       )}
 
       <div style={T.topBand}>
@@ -115,16 +121,33 @@ export default function Tournament() {
             </button>
           )}
           {tour.status === "running" && (
-            <div style={{ color: C.green, fontWeight: 900, marginTop: 16 }}>ОЧЕРЕДЬ ЗАПУЩЕНА</div>
+            <div style={{ color: C.green, fontWeight: 900, marginTop: 16 }}>
+              {activeTiebreak ? `ИДЁТ ДОП. КРУГ ${activeTiebreak}` : "ОЧЕРЕДЬ ЗАПУЩЕНА"}
+            </div>
           )}
         </div>
       </div>
 
-      <div style={T.grid}>
-        {tour.matches.map((m) => (
-          <MatchCard key={m.id} match={m} byId={byId} topic={topicById[m.topicId] || TOPICS[0]} />
-        ))}
+      <div style={T.liveHeader}>
+        <span>БОИ В ПРОЦЕССЕ</span>
+        <span style={{ color: C.muted, fontSize: 12 }}>архив завершённых боёв — во вкладке истории</span>
       </div>
+      <div style={T.liveStats}>
+        <span>Проведено: <b style={{ color: C.green }}>{played}</b></span>
+        <span>Осталось: <b style={{ color: C.yellow }}>{remaining}</b></span>
+        <span>Всего: <b style={{ color: C.text }}>{total}</b></span>
+      </div>
+      {liveMatches.length === 0 ? (
+        <div style={T.emptyLive}>
+          {tour.status === "ready" ? "Бои ещё не запущены." : tour.status === "done" ? "Активных боёв нет." : "Готовим следующую пачку боёв..."}
+        </div>
+      ) : (
+        <div style={T.grid}>
+          {liveMatches.map((m) => (
+            <MatchCard key={m.id} match={m} byId={byId} topic={topicById[m.topicId] || TOPICS[0]} />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -190,6 +213,9 @@ function MatchCard({ match, byId, topic }) {
         <span style={{ color: C.yellow, fontWeight: 900 }}>#{match.index}</span>
         <span style={{ ...T.status, color: status.color }}>{status.label}</span>
       </div>
+      {match.stage === "tiebreak" && (
+        <div style={T.tiebreakBadge}>ДОП. КРУГ {match.tiebreakRound}</div>
+      )}
       <div style={T.topic}>{topic.title}</div>
       <div style={T.fighters}>
         <FighterLine fighter={A} color={colorA} />
@@ -227,6 +253,14 @@ function statusView(status) {
   return { label: "ОЖИДАЕТ", color: C.muted };
 }
 
+function activeTiebreakRound(tour) {
+  const rounds = (tour.matches || [])
+    .filter((m) => m.stage === "tiebreak" && m.status !== "done" && m.status !== "error")
+    .map((m) => m.tiebreakRound || 0)
+    .filter(Boolean);
+  return rounds.length ? Math.max(...rounds) : 0;
+}
+
 const T = {
   done: {
     ...styles.verdictPanel,
@@ -238,7 +272,20 @@ const T = {
     fontSize: 28,
     letterSpacing: 3,
   },
+  tiebreakBanner: {
+    ...styles.panel,
+    maxWidth: 760,
+    margin: "0 auto 18px",
+    borderColor: C.yellow,
+    color: C.yellow,
+    textAlign: "center",
+    fontWeight: 900,
+    letterSpacing: 2,
+  },
   topBand: { display: "flex", gap: 16, alignItems: "stretch", marginBottom: 18, flexWrap: "wrap" },
+  liveHeader: { display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", color: C.yellow, fontWeight: 900, letterSpacing: 1, margin: "2px 0 10px", flexWrap: "wrap" },
+  liveStats: { display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap", color: C.muted, fontSize: 13, fontWeight: 900, margin: "0 0 12px" },
+  emptyLive: { ...styles.panel, color: C.muted, textAlign: "center", fontWeight: 900 },
   tableHeader: { display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", color: C.yellow, fontWeight: 900, letterSpacing: 1, marginBottom: 10 },
   row: { display: "flex", alignItems: "center", gap: 10, padding: "7px 8px", borderRadius: 6 },
   metricLabel: { color: C.muted, fontSize: 12, letterSpacing: 2, fontWeight: 900 },
@@ -247,6 +294,7 @@ const T = {
   card: { minHeight: 160, padding: 14 },
   cardTop: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 },
   status: { fontWeight: 900, fontSize: 12, letterSpacing: 1 },
+  tiebreakBadge: { display: "inline-block", marginBottom: 8, border: `1px solid ${C.yellow}`, borderRadius: 4, padding: "2px 8px", color: C.yellow, fontSize: 11, fontWeight: 900, letterSpacing: 1 },
   topic: { color: C.yellow, fontWeight: 900, lineHeight: 1.35, minHeight: 38, marginBottom: 12 },
   fighters: { display: "grid", gridTemplateColumns: "1fr auto 1fr", gap: 8, alignItems: "center" },
   fighter: { display: "flex", gap: 6, alignItems: "center", minWidth: 0, fontWeight: 900, fontSize: 13 },

@@ -377,7 +377,13 @@ app.post("/api/results", requireArenaKey, (req, res) => {
 app.get("/api/battles", (req, res) => {
   const limit = Number(req.query.limit) || 50;
   const query = typeof req.query.query === "string" ? req.query.query : "";
-  res.json({ battles: agents.listBattles({ query, limit }) });
+  const tournament =
+    req.query.tournament === "1" || req.query.tournament === "true"
+      ? true
+      : req.query.tournament === "0" || req.query.tournament === "false"
+        ? false
+        : null;
+  res.json({ battles: agents.listBattles({ query, limit, tournament }) });
 });
 
 app.get("/api/battles/:id", (req, res) => {

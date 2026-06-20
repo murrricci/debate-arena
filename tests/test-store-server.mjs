@@ -85,6 +85,12 @@ const afterTournamentStats = getAgentById(a.agent.id).stats;
 check("recordBattle для турнира не меняет разминочную статистику", afterTournamentStats.battles === beforeTournamentStats.battles && afterTournamentStats.points === beforeTournamentStats.points);
 check("турнирный бой хранится с явной пометкой", getBattle(tour.battleId).tournament === true);
 check("listBattles возвращает турнирную пометку", listBattles({ query: "турнир" }).some((bt) => bt.id === tour.battleId && bt.tournament === true));
+const onlyTournamentBattles = listBattles({ tournament: true });
+check("listBattles умеет показывать только турнирные бои", onlyTournamentBattles.some((bt) => bt.id === tour.battleId) && !onlyTournamentBattles.some((bt) => bt.id === res.battleId));
+const onlyWarmupBattles = listBattles({ tournament: false });
+check("listBattles умеет исключать турнирные бои", onlyWarmupBattles.some((bt) => bt.id === res.battleId) && !onlyWarmupBattles.some((bt) => bt.id === tour.battleId));
+const tournamentByExternal = listBattles({ query: "#u-2", tournament: true });
+check("listBattles совмещает турнирный фильтр с поиском", tournamentByExternal.length === 1 && tournamentByExternal[0].id === tour.battleId);
 
 // 6. Лидерборд: место и сортировка.
 const board = leaderboard();
