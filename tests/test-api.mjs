@@ -122,6 +122,10 @@ async function main() {
   const battlesByNumber = await (await fetch(`${BASE}/api/battles?query=%23u-2`)).json();
   check("GET /api/battles ищет по номеру пользователя", battlesByNumber.battles.some((bt) => bt.id === result.battleId));
   check("GET /api/battles возвращает турнирную пометку в списке", battlesByNumber.battles.some((bt) => bt.id === tour.battleId && bt.tournament === true));
+  const tournamentBattles = await (await fetch(`${BASE}/api/battles?tournament=1`)).json();
+  check("GET /api/battles?tournament=1 возвращает только турнирные бои", tournamentBattles.battles.some((bt) => bt.id === tour.battleId) && !tournamentBattles.battles.some((bt) => bt.id === result.battleId));
+  const tournamentBattlesByNumber = await (await fetch(`${BASE}/api/battles?query=%23u-2&tournament=1`)).json();
+  check("GET /api/battles совмещает турнирный фильтр с поиском", tournamentBattlesByNumber.battles.length === 1 && tournamentBattlesByNumber.battles[0].id === tour.battleId);
 
   // 9. лидерборд (открытый).
   const lb = await (await fetch(`${BASE}/api/results/leaderboard`)).json();

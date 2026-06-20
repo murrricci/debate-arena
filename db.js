@@ -84,6 +84,7 @@ export function initDb(filename) {
   db.exec("CREATE INDEX IF NOT EXISTS idx_battles_a ON battles(a_id);");
   db.exec("CREATE INDEX IF NOT EXISTS idx_battles_b ON battles(b_id);");
   db.exec("CREATE INDEX IF NOT EXISTS idx_battles_created ON battles(created_at);");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_battles_tournament ON battles(tournament);");
   return db;
 }
 
@@ -325,17 +326,27 @@ export function getBattle(id) {
   return rowToBattle({ ...row, ...historyNames(parsed) }, { includeHistory: true });
 }
 
-export function listBattles({ query = "", limit = 50 } = {}) {
+function normalizeTournamentFilter(value) {
+  if (value === true || value === 1 || value === "1") return 1;
+  if (value === false || value === 0 || value === "0") return 0;
+  return null;
+}
+
+export function listBattles({ query = "", limit = 50, tournament = null } = {}) {
   const lim = Math.max(1, Math.min(500, limit | 0));
   const q = String(query ?? "").trim().replace(/^#/, "").toLowerCase();
+  const tournamentFilter = normalizeTournamentFilter(tournament);
+  const where = tournamentFilter == null ? "" : "WHERE bt.tournament = ?";
+  const args = tournamentFilter == null ? [] : [tournamentFilter];
   const rows = db.prepare(`
     SELECT bt.*, a.name AS a_name, b.name AS b_name, a.external_id AS a_external_id, b.external_id AS b_external_id
     FROM battles bt
     LEFT JOIN agents a ON a.id = bt.a_id
     LEFT JOIN agents b ON b.id = bt.b_id
+    ${where}
     ORDER BY bt.created_at DESC, bt.id DESC
     LIMIT ?
-  `).all(q ? 500 : lim);
+  `).all(...args, q ? 500 : lim);
   const mapped = rows.map((row) => {
     const parsed = safeParse(row.history, null);
     return rowToBattle({ ...row, ...historyNames(parsed) });
