@@ -59,6 +59,7 @@ function roundRobin(ids) {
           winner: null,
           scoreA: 0,
           scoreB: 0,
+          battleId: null,
           error: "",
         });
       }
@@ -142,14 +143,14 @@ function initialStatsById(roster) {
   return Object.fromEntries(roster.map((id) => [id, emptyStats()]));
 }
 
-export function recordTournamentMatchResult(t, { matchId, winner, scoreA = 0, scoreB = 0 }) {
+export function recordTournamentMatchResult(t, { matchId, winner, scoreA = 0, scoreB = 0, battleId = null }) {
   const match = t.matches.find((m) => m.id === matchId);
   if (!match) return t;
   const statsById = { ...initialStatsById(t.roster), ...(t.statsById || {}) };
   statsById[match.a] = nextStats(statsById[match.a], "A", { winner, scoreA, scoreB });
   statsById[match.b] = nextStats(statsById[match.b], "B", { winner, scoreA, scoreB });
   const matches = t.matches.map((m) =>
-    m.id === matchId ? { ...m, status: "done", played: true, winner, scoreA, scoreB, error: "" } : m
+    m.id === matchId ? { ...m, status: "done", played: true, winner, scoreA, scoreB, battleId, error: "" } : m
   );
   const status = matches.every((m) => m.status === "done") ? "done" : t.status === "idle" ? "ready" : t.status;
   const cursor = matches.findIndex((m) => m.status !== "done" && m.status !== "error");
@@ -202,12 +203,12 @@ export function currentMatch() {
 }
 
 // Записать результат текущего матча и сдвинуть курсор.
-export function recordMatchResult({ matchId, winner, scoreA, scoreB }) {
+export function recordMatchResult({ matchId, winner, scoreA, scoreB, battleId = null }) {
   const t = getTournament();
   if (!["ready", "running"].includes(t.status)) return t;
   const match = matchId ? t.matches.find((m) => m.id === matchId) : currentMatch();
   if (!match) return t;
-  return save(recordTournamentMatchResult(t, { matchId: match.id, winner, scoreA, scoreB }));
+  return save(recordTournamentMatchResult(t, { matchId: match.id, winner, scoreA, scoreB, battleId }));
 }
 
 // Полный сброс турнира (вернуться к свободной регистрации).

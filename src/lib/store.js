@@ -140,16 +140,22 @@ function afterReset(r) {
 
 // Начисление очков по итогу боя. Оптимистично — той же формулой, что и сервер (scoring.js),
 // затем сервер присылает авторитетные значения и мы их подставляем.
-export function applyResult({ aId, bId, winner, scoreA, scoreB, topic = null, tournament = false }) {
+export function applyResult({ aId, bId, winner, scoreA, scoreB, topic = null, tournament = false, history = null, onSaved, onError }) {
   setCache(cache.map((p) => {
     if (p.id === aId) return { ...p, stats: nextStats(p.stats, "A", { winner, scoreA, scoreB }) };
     if (p.id === bId) return { ...p, stats: nextStats(p.stats, "B", { winner, scoreA, scoreB }) };
     return p;
   }));
   if (inBrowser) {
-    track(send("POST", "/api/results", { aId, bId, winner, scoreA, scoreB, topic, tournament }))
-      .then((r) => { if (r?.a) reconcile(r.a); if (r?.b) reconcile(r.b); })
-      .catch(() => {});
+    track(send("POST", "/api/results", { aId, bId, winner, scoreA, scoreB, topic, tournament, history }))
+      .then((r) => {
+        if (r?.a) reconcile(r.a);
+        if (r?.b) reconcile(r.b);
+        if (typeof onSaved === "function") onSaved(r);
+      })
+      .catch((e) => {
+        if (typeof onError === "function") onError(e);
+      });
   }
   return cache;
 }

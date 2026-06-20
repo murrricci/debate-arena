@@ -47,6 +47,19 @@ check("runner делает 2 раунда и финал = 7 model calls", calls.
 check("судья вызывается как judge=true", calls.filter((c) => c.options?.judge).length === 3);
 check("runner возвращает итоговый winner/score", result.winner === "A" && result.scoreA === 82 && result.scoreB === 75);
 check("runner возвращает стенограмму по двум репликам на раунд", result.transcript.length === 4);
+check("runner возвращает полный протокол по раундам", result.history?.rounds?.length === 2);
+check(
+  "протокол сохраняет реплики и реакцию судьи",
+  result.history?.rounds?.[0]?.replies?.A?.text === "Аргумент A1" &&
+    result.history?.rounds?.[0]?.replies?.B?.text === "Ответ B1" &&
+    result.history?.rounds?.[0]?.judge?.note === "A сильнее"
+);
+check(
+  "протокол содержит тему, стороны и финальный вердикт",
+  result.history?.topic?.title === "Тестовая тема" &&
+    result.history?.stances?.A === "За A" &&
+    result.history?.final?.winner === "A"
+);
 check("runner публикует события reply и verdict", events.some((e) => e.type === "reply" && e.side === "A") && events.some((e) => e.type === "verdict"));
 check("runner считает расход токенов бойцов отдельно", result.tokensA === 200 && result.tokensB === 240);
 

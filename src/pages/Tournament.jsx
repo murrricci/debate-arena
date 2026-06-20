@@ -17,6 +17,7 @@ import {
 } from "../lib/tournament.js";
 import { TOPICS } from "../data/topics.js";
 import { runDebateFight } from "../lib/fightRunner.js";
+import { saveTournamentBattle } from "../lib/battleHistory.js";
 
 const MEDALS = ["🥇", "🥈", "🥉"];
 const NO_DELAYS = { intro: 0, afterReply: 0, afterJudge: 0, afterShake: 0 };
@@ -143,7 +144,14 @@ async function runTournamentMatch(match, byId, topicById, activeRef, setTour) {
       waitFor: async () => {},
       onEvent: () => {},
     });
-    const next = recordMatchResult({ matchId: match.id, winner: result.winner, scoreA: result.scoreA, scoreB: result.scoreB });
+    let battleId = null;
+    try {
+      const saved = await saveTournamentBattle({ A, B, topic, result, match });
+      battleId = saved?.battleId ?? null;
+    } catch (e) {
+      console.warn("Не удалось сохранить историю турнирного боя:", e.message);
+    }
+    const next = recordMatchResult({ matchId: match.id, winner: result.winner, scoreA: result.scoreA, scoreB: result.scoreB, battleId });
     setTour(next);
   } catch (e) {
     const next = recordMatchError({ matchId: match.id, error: e.message });
@@ -192,6 +200,9 @@ function MatchCard({ match, byId, topic }) {
         <div style={T.result}>
           {match.winner === "draw" ? "НИЧЬЯ" : `Победа: ${match.winner === "A" ? A?.name : B?.name}`}
           <span style={{ color: C.muted }}> · {match.scoreA}:{match.scoreB}</span>
+          {match.battleId && (
+            <Link to={`/battles/${match.battleId}`} style={T.historyLink}>ХОД БОЯ</Link>
+          )}
         </div>
       )}
       {match.status === "error" && <div style={{ ...T.result, color: C.danger }}>{match.error}</div>}
@@ -240,4 +251,5 @@ const T = {
   fighters: { display: "grid", gridTemplateColumns: "1fr auto 1fr", gap: 8, alignItems: "center" },
   fighter: { display: "flex", gap: 6, alignItems: "center", minWidth: 0, fontWeight: 900, fontSize: 13 },
   result: { marginTop: 12, color: C.green, fontWeight: 900, fontSize: 13, lineHeight: 1.35 },
+  historyLink: { display: "inline-block", marginLeft: 10, color: C.yellow, textDecoration: "none", borderBottom: `1px solid ${C.yellow}` },
 };

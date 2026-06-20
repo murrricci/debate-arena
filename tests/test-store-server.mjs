@@ -4,7 +4,7 @@
 import {
   initDb, createAgent, getAgentById, getAgentByExternalId,
   upgradeAgent, applyResult, leaderboard, userResults, resetScores,
-  removeAgent, MAX_UPGRADES,
+  removeAgent, MAX_UPGRADES, getBattle, listBattles, recordBattle,
 } from "../db.js";
 
 initDb(":memory:");
@@ -48,10 +48,43 @@ check("windowSize закламплен в [2,6]", b.agent.config.windowSize === 
 check("неизвестный memory → дефолт", b.agent.config.memory === "window");
 
 // 5. Начисление очков: победа A с разрывом 80-60 → +3 и бонус round(20/20)=1 = 4 очка.
-const res = applyResult({ aId: a.agent.id, bId: b.agent.id, winner: "A", scoreA: 80, scoreB: 60, topic: "Тест", tournament: false });
+const sampleHistory = {
+  topic: { title: "Тест" },
+  stances: { A: "За", B: "Против" },
+  fighters: { A: { id: a.agent.id, name: "Альфа" }, B: { id: b.agent.id, name: "Бета" } },
+  rounds: [
+    {
+      round: 1,
+      replies: { A: { text: "Аргумент" }, B: { text: "Ответ" } },
+      judge: { note: "A убедительнее" },
+      damage: { A: 1, B: 5 },
+      hp: { A: 99, B: 95 },
+    },
+  ],
+  final: { winner: "A", score_a: 80, score_b: 60, rationale: "A лучше" },
+};
+const res = applyResult({ aId: a.agent.id, bId: b.agent.id, winner: "A", scoreA: 80, scoreB: 60, topic: "Тест", tournament: false, history: sampleHistory });
 check("после боя у A 1 победа", res.a.stats.wins === 1 && res.a.stats.battles === 1);
 check("A получил 3 + бонус(1) = 4 очка", res.a.stats.points === 4);
 check("у B зафиксировано поражение, 0 очков", res.b.stats.losses === 1 && res.b.stats.points === 0);
+check("applyResult возвращает battleId", Number.isInteger(res.battleId) && res.battleId > 0);
+
+const savedBattle = getBattle(res.battleId);
+check("getBattle возвращает сохранённый протокол", savedBattle.history?.rounds?.[0]?.judge?.note === "A убедительнее");
+check("getBattle помечает обычный бой как не турнирный", savedBattle.tournament === false);
+
+const byName = listBattles({ query: "альф" });
+check("listBattles ищет бой по имени агента", byName.some((bt) => bt.id === res.battleId));
+
+const byExternal = listBattles({ query: "#u-2" });
+check("listBattles ищет бой по номеру пользователя", byExternal.some((bt) => bt.id === res.battleId));
+
+const beforeTournamentStats = getAgentById(a.agent.id).stats;
+const tour = recordBattle({ aId: a.agent.id, bId: b.agent.id, winner: "B", scoreA: 40, scoreB: 75, topic: "Турнир", tournament: true, history: { ...sampleHistory, topic: { title: "Турнир" } } });
+const afterTournamentStats = getAgentById(a.agent.id).stats;
+check("recordBattle для турнира не меняет разминочную статистику", afterTournamentStats.battles === beforeTournamentStats.battles && afterTournamentStats.points === beforeTournamentStats.points);
+check("турнирный бой хранится с явной пометкой", getBattle(tour.battleId).tournament === true);
+check("listBattles возвращает турнирную пометку", listBattles({ query: "турнир" }).some((bt) => bt.id === tour.battleId && bt.tournament === true));
 
 // 6. Лидерборд: место и сортировка.
 const board = leaderboard();
@@ -63,6 +96,7 @@ const ur = userResults({ externalId: "u-1" });
 check("у A место 1 из 2", ur.rank === 1 && ur.total === 2);
 check("история A содержит 1 бой — победу над Бета", ur.history.length === 1 && ur.history[0].result === "win" && ur.history[0].opponentName === "Бета");
 check("в истории сохранена тема", ur.history[0].topic === "Тест");
+check("в истории пользователя есть ссылка на бой", ur.history[0].battleId === res.battleId);
 
 // 8. Сброс очков.
 resetScores();

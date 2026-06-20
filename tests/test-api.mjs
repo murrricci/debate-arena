@@ -92,9 +92,36 @@ async function main() {
 
   // 8. второй агент + результат боя.
   const b = await (await fetch(`${BASE}/api/agents`, authed("POST", { externalId: "u-2", name: "Бета", skills: ["factualist"] }))).json();
-  const resultRes = await fetch(`${BASE}/api/results`, authed("POST", { aId: created.id, bId: b.id, winner: "A", scoreA: 90, scoreB: 50, topic: "Тест", tournament: false }));
+  const history = {
+    topic: { title: "Тест" },
+    stances: { A: "За", B: "Против" },
+    fighters: { A: { id: created.id, name: "Альфа" }, B: { id: b.id, name: "Бета" } },
+    rounds: [{ round: 1, replies: { A: { text: "Аргумент" }, B: { text: "Ответ" } }, judge: { note: "A сильнее" }, damage: { A: 1, B: 5 }, hp: { A: 99, B: 95 } }],
+    final: { winner: "A", score_a: 90, score_b: 50, rationale: "A убедительнее" },
+  };
+  const resultRes = await fetch(`${BASE}/api/results`, authed("POST", { aId: created.id, bId: b.id, winner: "A", scoreA: 90, scoreB: 50, topic: "Тест", tournament: false, history }));
   const result = await resultRes.json();
   check("POST /api/results → A победил, 3 + бонус(2) = 5 очков", result.a.stats.points === 5 && result.a.stats.wins === 1);
+  check("POST /api/results возвращает battleId", Number.isInteger(result.battleId) && result.battleId > 0);
+
+  const battle = await (await fetch(`${BASE}/api/battles/${result.battleId}`)).json();
+  check("GET /api/battles/:id возвращает протокол", battle.history?.rounds?.[0]?.judge?.note === "A сильнее");
+  check("обычный бой в API не помечен как турнирный", battle.tournament === false);
+
+  const tourRes = await fetch(`${BASE}/api/battles`, authed("POST", { aId: created.id, bId: b.id, winner: "B", scoreA: 40, scoreB: 80, topic: "Турнир", tournament: true, history: { ...history, topic: { title: "Турнир" } } }));
+  const tour = await tourRes.json();
+  check("POST /api/battles сохраняет турнирный бой", tourRes.status === 201 && Number.isInteger(tour.battleId));
+
+  const tourBattle = await (await fetch(`${BASE}/api/battles/${tour.battleId}`)).json();
+  check("турнирный бой в API имеет пометку tournament", tourBattle.tournament === true);
+
+  const afterTourRoster = await (await fetch(`${BASE}/api/agents`)).json();
+  const afterTourA = afterTourRoster.agents.find((p) => p.id === created.id);
+  check("турнирная запись не меняет разминочную статистику", afterTourA.stats.battles === 1 && afterTourA.stats.points === 5);
+
+  const battlesByNumber = await (await fetch(`${BASE}/api/battles?query=%23u-2`)).json();
+  check("GET /api/battles ищет по номеру пользователя", battlesByNumber.battles.some((bt) => bt.id === result.battleId));
+  check("GET /api/battles возвращает турнирную пометку в списке", battlesByNumber.battles.some((bt) => bt.id === tour.battleId && bt.tournament === true));
 
   // 9. лидерборд (открытый).
   const lb = await (await fetch(`${BASE}/api/results/leaderboard`)).json();
