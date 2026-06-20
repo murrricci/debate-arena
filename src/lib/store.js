@@ -8,6 +8,7 @@ import { publish } from "./bus.js";
 import { nextStats, sortLeaderboard, emptyStats, MAX_UPGRADES } from "./scoring.js";
 
 export { MAX_UPGRADES };
+export const MAX_WARMUP_BATTLES = 3;
 
 const KEY = "debate-arena:participants";
 const MIGRATED_KEY = "debate-arena:migrated";
@@ -62,6 +63,9 @@ export function getParticipant(id) {
 }
 export function leaderboard() {
   return sortLeaderboard(cache);
+}
+export function canPlayWarmup(participant) {
+  return !!participant && (participant.stats?.battles || 0) < MAX_WARMUP_BATTLES;
 }
 
 // --- МУТАЦИИ (оптимистичный кэш + фоновая отправка на сервер) ---

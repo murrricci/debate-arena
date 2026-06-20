@@ -1,36 +1,18 @@
 import React, { useState, useEffect, useRef } from "react";
 import { styles, C } from "../styles.js";
-import { getParticipants, applyResult } from "../lib/store.js";
-import { getTournament, currentMatch, recordMatchResult, progress } from "../lib/tournament.js";
-import { buildFighterSystem, fighterFace, fighterColor } from "../lib/agent.js";
-import { callClaude } from "../lib/api.js";
+import { getParticipants, applyResult, canPlayWarmup, MAX_WARMUP_BATTLES } from "../lib/store.js";
+import { getTournament } from "../lib/tournament.js";
+import { fighterFace, fighterColor } from "../lib/agent.js";
 import { publish, subscribe } from "../lib/bus.js";
 import { TOPICS, randomTopic } from "../data/topics.js";
-import { roundJudgeSystem, finalJudgeSystem, roundDamage, judgeFeedbackMessage, CRITERIA } from "../data/judging.js";
-import { pickModel, MODEL_TIERS } from "../lib/models.js";
-import { getConfig, replyWords, temperatureValue, memoryWindow, usesJudge } from "../data/agentConfig.js";
+import { MODEL_TIERS } from "../lib/models.js";
 import { pickSprite } from "../data/sprites.js";
 import { filterFighters, fighterOptionLabel } from "../lib/fighterSearch.js";
+import { runDebateFight } from "../lib/fightRunner.js";
 import PixelFighter from "../components/PixelFighter.jsx";
 import PixelArena from "../components/PixelArena.jsx";
 
 const ROUNDS = 3;
-const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-
-// Защита от непослушных моделей: режем слишком длинный ответ до лимита слов бойца (+запас).
-function clampReply(text, maxWords) {
-  const clean = (text || "").replace(/\s+/g, " ").trim();
-  const limit = Math.round(maxWords * 1.3);
-  const words = clean.split(" ");
-  if (words.length <= limit) return clean;
-  return words.slice(0, limit).join(" ").replace(/[,;:—-]+$/, "") + "…";
-}
-
-// История для агента с учётом его настройки памяти: берём последние N реплик стенограммы.
-function historyFor(side, transcript, window) {
-  const slice = transcript.slice(Math.max(0, transcript.length - window));
-  return slice.map((t) => ({ role: t.side === side ? "assistant" : "user", content: t.text }));
-}
 
 export default function Arena() {
   const [people, setPeople] = useState(getParticipants());
@@ -94,182 +76,88 @@ export default function Arena() {
 
   // Запуск ручного боя (разминка) из текущих селекторов.
   function startManualFight() {
-    if (A && B && aId !== bId) runFight(A, B, topic, swapped, { tournament: false });
+    if (tour.closed) return setError("Разминка закрыта — турнир уже сформирован.");
+    if (!A || !B || aId === bId) return;
+    if (!canPlayWarmup(A) || !canPlayWarmup(B)) {
+      return setError(`В разминке каждый агент играет максимум ${MAX_WARMUP_BATTLES} боя.`);
+    }
+    runFight(A, B, topic, swapped);
   }
 
-  // Запуск следующего турнирного матча по расписанию.
-  function startTournamentMatch() {
-    const m = currentMatch();
-    if (!m) return;
-    const aF = people.find((p) => p.id === m.a);
-    const bF = people.find((p) => p.id === m.b);
-    if (!aF || !bF) return setError("Боец матча не найден.");
-    runFight(aF, bF, randomTopic(), false, { tournament: true });
-  }
-
-  async function runFight(aF, bF, topicObj, swap, { tournament = false } = {}) {
+  async function runFight(aF, bF, topicObj, swap) {
     const A = aF;
     const B = bF;
     const topic = topicObj;
-    const stanceA = swap ? topic.sideB : topic.sideA;
-    const stanceB = swap ? topic.sideA : topic.sideB;
     // Синхронизируем селекторы — от них зависит рендер ринга и трансляция на табло.
     setAId(A.id);
     setBId(B.id);
     setTopicId(topic.id);
     setSwapped(swap);
 
-    setError("");
-    setPhase("versus");
-    await wait(2200);
-    setPhase("fight");
-    setHpA(100);
-    setHpB(100);
-    setLog([]);
-    setVerdict(null);
-    setTierA(MODEL_TIERS[0]);
-    setTierB(MODEL_TIERS[0]);
-    setModelA("");
-    setModelB("");
-
     const colorA = fighterColor(A, C.red);
     const colorB = fighterColor(B, C.blue);
     const faceA = fighterFace(A);
     const faceB = fighterFace(B);
-    const sysA = buildFighterSystem(A, stanceA, topic.title);
-    const sysB = buildFighterSystem(B, stanceB, topic.title);
-
-    // Тонкие настройки каждого бойца (память / темперамент / длина реплики).
-    const cfgA = getConfig(A);
-    const cfgB = getConfig(B);
-    const wordsA = replyWords(cfgA);
-    const wordsB = replyWords(cfgB);
-    const tempA = temperatureValue(cfgA);
-    const tempB = temperatureValue(cfgB);
-    const useJudgeA = usesJudge(cfgA);
-    const useJudgeB = usesJudge(cfgB);
-    const budget = (w) => Math.max(180, Math.round(w * 7)); // токен-бюджет под длину реплики
-
-    const transcript = [];
-    let curHpA = 100;
-    let curHpB = 100;
-    // Накопленный расход токенов каждого бойца → определяет текущую модель (деградация).
-    let tokA = 0;
-    let tokB = 0;
-    // Оценка судьи прошлого раунда — отдаём её бойцам, если включена опция «Учитывать судью».
-    let lastJudgement = null;
-    // Тайминг боя: общее «настенное» время против чистого времени в LLM (остальное — паузы UX).
     const fightStart = performance.now();
-    let llmMs = 0;
-    let fightCost = 0; // ₽, суммарная стоимость боя из usage.cost_rub ответов
 
     try {
-      for (let r = 1; r <= ROUNDS; r++) {
-        setRound(r);
-
-        // Боец A — модель по его перегреву, история по его настройке памяти
-        const mA = pickModel(tokA);
-        setTierA(mA);
-        setStatus(`${A.name} атакует… [${mA.label}]`);
-        const histA = historyFor("A", transcript, memoryWindow(cfgA, transcript.length));
-        const instrA = r === 1 ? "Открой дебаты своим сильнейшим аргументом." : "Парируй оппонента и нанеси новый удар.";
-        const fbA = r > 1 && useJudgeA ? judgeFeedbackMessage("A", lastJudgement) : "";
-        const resA = await callClaude(
-          sysA,
-          [...histA, { role: "user", content: [fbA, instrA].filter(Boolean).join("\n\n") }],
-          { maxTokens: budget(wordsA), tier: mA.tier, temperature: tempA, label: `R${r}·A` }
-        );
-        llmMs += resA.ms || 0;
-        fightCost += resA.usage?.cost_rub || 0;
-        const replyA = clampReply(resA.text, wordsA);
-        tokA += resA.usage?.total_tokens || 0;
-        if (resA.model) setModelA(resA.model);
-        transcript.push({ side: "A", text: replyA });
-        setLog((l) => [...l, { side: "A", name: A.name, face: faceA, color: colorA, text: replyA, round: r, tier: mA }]);
-        await wait(700);
-
-        // Боец B — модель по его перегреву, история по его настройке памяти
-        const mB = pickModel(tokB);
-        setTierB(mB);
-        setStatus(`${B.name} отвечает… [${mB.label}]`);
-        const histB = historyFor("B", transcript, memoryWindow(cfgB, transcript.length));
-        const instrB = "Разбей это и ударь в ответ.";
-        const fbB = r > 1 && useJudgeB ? judgeFeedbackMessage("B", lastJudgement) : "";
-        const resB = await callClaude(
-          sysB,
-          [...histB, { role: "user", content: [fbB, instrB].filter(Boolean).join("\n\n") }],
-          { maxTokens: budget(wordsB), tier: mB.tier, temperature: tempB, label: `R${r}·B` }
-        );
-        llmMs += resB.ms || 0;
-        fightCost += resB.usage?.cost_rub || 0;
-        const replyB = clampReply(resB.text, wordsB);
-        tokB += resB.usage?.total_tokens || 0;
-        if (resB.model) setModelB(resB.model);
-        transcript.push({ side: "B", text: replyB });
-        setLog((l) => [...l, { side: "B", name: B.name, face: faceB, color: colorB, text: replyB, round: r, tier: mB }]);
-        await wait(700);
-
-        // Судья оценивает обмен (судью держим на сильной модели — он арбитр)
-        setStatus("🧑‍⚖️ судья считает раунд…");
-        const judgeRes = await callClaude(
-          roundJudgeSystem(),
-          [
-            {
-              role: "user",
-              content: `Тема: ${topic.title}\n\nБОЕЦ A (${A.name}) защищает: «${stanceA}»\nA сказал: "${replyA}"\n\nБОЕЦ B (${B.name}) защищает: «${stanceB}»\nB сказал: "${replyB}"`,
-            },
-          ],
-          { json: true, maxTokens: 300, judge: true, label: `R${r}·судья` }
-        );
-        llmMs += judgeRes.ms || 0;
-        fightCost += judgeRes.usage?.cost_rub || 0;
-        const judgement = judgeRes.parsed;
-        lastJudgement = judgement; // отдадим бойцам в следующем раунде (если включена опция)
-
-        const { damageToA, damageToB } = roundDamage(judgement);
-        curHpA = Math.max(0, curHpA - damageToA);
-        curHpB = Math.max(0, curHpB - damageToB);
-        if (damageToA > damageToB) setShake("A");
-        else if (damageToB > damageToA) setShake("B");
-        setHpA(curHpA);
-        setHpB(curHpB);
-        setLog((l) => [...l, { side: "judge", text: judgement.note || "раунд сыгран", round: r }]);
-        await wait(700);
-        setShake(null);
-        await wait(500);
-      }
-
-      // Финальный вердикт
-      setStatus("🧑‍⚖️ ФИНАЛЬНЫЙ ВЕРДИКТ…");
-      const full = transcript.map((t) => `${t.side === "A" ? A.name : B.name}: ${t.text}`).join("\n\n");
-      const finalRes = await callClaude(
-        finalJudgeSystem(),
-        [{ role: "user", content: `Тема: ${topic.title}\nA (${A.name}): «${stanceA}»\nB (${B.name}): «${stanceB}»\n\n${full}` }],
-        { json: true, maxTokens: 300, judge: true, label: "финал" }
-      );
-      llmMs += finalRes.ms || 0;
-      fightCost += finalRes.usage?.cost_rub || 0;
-      const final = finalRes.parsed;
-
-      // Тай-брейк по остаткам HP, если судья поставил равный счёт.
-      let winner = final.winner;
-      if (final.score_a === final.score_b) winner = curHpA === curHpB ? "draw" : curHpA > curHpB ? "A" : "B";
-
-      setVerdict({ ...final, winner, hpA: curHpA, hpB: curHpB });
-      setStatus("");
-      setPhase("verdict");
+      const result = await runDebateFight({
+        aF: A,
+        bF: B,
+        topic,
+        swap,
+        rounds: ROUNDS,
+        onEvent: (event) => {
+          if (event.type === "phase") setPhase(event.phase);
+          if (event.type === "reset") {
+            setHpA(100);
+            setHpB(100);
+            setLog([]);
+            setVerdict(null);
+            setTierA(event.tierA);
+            setTierB(event.tierB);
+            setModelA("");
+            setModelB("");
+          }
+          if (event.type === "round") setRound(event.round);
+          if (event.type === "status") setStatus(event.status);
+          if (event.type === "tier" && event.side === "A") setTierA(event.tier);
+          if (event.type === "tier" && event.side === "B") setTierB(event.tier);
+          if (event.type === "model" && event.side === "A") setModelA(event.model);
+          if (event.type === "model" && event.side === "B") setModelB(event.model);
+          if (event.type === "reply") {
+            const isA = event.side === "A";
+            setLog((l) => [...l, {
+              side: event.side,
+              name: isA ? A.name : B.name,
+              face: isA ? faceA : faceB,
+              color: isA ? colorA : colorB,
+              text: event.text,
+              round: event.round,
+              tier: event.tier,
+            }]);
+          }
+          if (event.type === "judge") {
+            if (event.shake) setShake(event.shake);
+            setHpA(event.hpA);
+            setHpB(event.hpB);
+            setLog((l) => [...l, { side: "judge", text: event.judgement?.note || "раунд сыгран", round: event.round }]);
+          }
+          if (event.type === "shake") setShake(event.side);
+          if (event.type === "verdict") {
+            setVerdict(event.verdict);
+            setPhase("verdict");
+          }
+        },
+      });
 
       // Итог по таймингу: сколько ушло на провайдера, а сколько — на паузы интерфейса.
       const wallMs = Math.round(performance.now() - fightStart);
-      const llm = Math.round(llmMs);
-      console.log(`[БОЙ] всего ${wallMs}мс · LLM ${llm}мс (${Math.round((llm / wallMs) * 100)}%) · паузы UX ${wallMs - llm}мс · ₽${fightCost.toFixed(2)}`);
+      const llm = Math.round(result.llmMs);
+      console.log(`[БОЙ] всего ${wallMs}мс · LLM ${llm}мс (${Math.round((llm / wallMs) * 100)}%) · паузы UX ${wallMs - llm}мс · ₽${result.fightCost.toFixed(2)}`);
 
-      // Начисляем очки в зачёт (для турнирной таблицы и разминочного рейтинга).
-      applyResult({ aId: A.id, bId: B.id, winner, scoreA: final.score_a, scoreB: final.score_b, topic: topic.title, tournament });
-      if (tournament) {
-        recordMatchResult({ winner, scoreA: final.score_a, scoreB: final.score_b });
-        setTour(getTournament());
-      }
+      // Начисляем очки только в зачёт разминки. Турнир хранит отдельную таблицу.
+      applyResult({ aId: A.id, bId: B.id, winner: result.winner, scoreA: result.scoreA, scoreB: result.scoreB, topic: topic.title, tournament: false });
       setPeople(getParticipants());
     } catch (e) {
       setError("Бой прерван: " + e.message);
@@ -278,20 +166,12 @@ export default function Arena() {
     }
   }
 
-  const canFight = A && B && aId !== bId;
+  const canFight = A && B && aId !== bId && !tour.closed && canPlayWarmup(A) && canPlayWarmup(B);
 
   if (phase === "select") {
-    if (tour.status === "running" || tour.status === "done") {
-      return (
-        <TournamentSelect
-          {...{ tour, people, error }}
-          onPlay={startTournamentMatch}
-        />
-      );
-    }
     return (
       <Selection
-        {...{ people, aId, setAId, bId, setBId, topic, topicId, setTopicId, rollTopic, swapped, setSwapped, stanceA, stanceB, canFight, runFight: startManualFight, error }}
+        {...{ people, aId, setAId, bId, setBId, topic, topicId, setTopicId, rollTopic, swapped, setSwapped, stanceA, stanceB, canFight, runFight: startManualFight, error, tour }}
       />
     );
   }
@@ -309,7 +189,7 @@ export default function Arena() {
 }
 
 /* ---------- Экран выбора ---------- */
-function Selection({ people, aId, setAId, bId, setBId, topic, topicId, setTopicId, rollTopic, swapped, setSwapped, stanceA, stanceB, canFight, runFight, error }) {
+function Selection({ people, aId, setAId, bId, setBId, topic, topicId, setTopicId, rollTopic, swapped, setSwapped, stanceA, stanceB, canFight, runFight, error, tour }) {
   if (people.length < 2) {
     return (
       <div className="fade-in" style={{ textAlign: "center" }}>
@@ -324,6 +204,11 @@ function Selection({ people, aId, setAId, bId, setBId, topic, topicId, setTopicI
   return (
     <div className="fade-in">
       <p style={styles.sectionLabel}>ВЫБЕРИ БОЙЦОВ И ТЕМУ</p>
+      {tour.closed && (
+        <div style={{ ...styles.panel, maxWidth: 720, margin: "0 auto 18px", borderColor: C.yellow, textAlign: "center", color: C.yellow, fontWeight: 900 }}>
+          Разминка закрыта. Турнир сформирован — переходи во вкладку <a href="#/tournament" style={{ color: C.blue }}>🏆 ТУРНИР</a>.
+        </div>
+      )}
 
       {/* Тема */}
       <div style={{ ...styles.panel, maxWidth: 720, margin: "0 auto 22px" }}>
@@ -354,6 +239,11 @@ function Selection({ people, aId, setAId, bId, setBId, topic, topicId, setTopicI
 
       <div style={{ textAlign: "center", marginTop: 8 }}>
         <button style={styles.btn} onClick={runFight} disabled={!canFight}>▶ БОЙ</button>
+        {!tour.closed && (aId || bId) && !canFight && (
+          <div style={{ color: C.muted, marginTop: 10, fontSize: 12 }}>
+            В разминке каждый агент играет максимум {MAX_WARMUP_BATTLES} боя.
+          </div>
+        )}
       </div>
     </div>
   );
@@ -443,6 +333,9 @@ function FighterSelect({ side, color, value, onChange, people, disabledId }) {
           <div style={{ fontSize: 12, color: C.muted, marginTop: 6 }}>
             {sel.externalId ? `#${sel.externalId} · ` : ""}{sel.skills.map((id) => id).length} скиллов · {sel.stats.wins}–{sel.stats.losses}
           </div>
+          <div style={{ fontSize: 12, color: canPlayWarmup(sel) ? C.green : C.danger, marginTop: 4, fontWeight: 900 }}>
+            разминка: {sel.stats.battles}/{MAX_WARMUP_BATTLES}
+          </div>
         </div>
       )}
     </div>
@@ -499,89 +392,6 @@ const fighterSearchStyles = {
     lineHeight: "24px",
   },
 };
-
-/* ---------- Экран турнира ---------- */
-function TournamentSelect({ tour, people, onPlay, error }) {
-  const byId = Object.fromEntries(people.map((p) => [p.id, p]));
-  const { played, total } = progress();
-  const m = tour.matches[tour.cursor];
-  const A = m ? byId[m.a] : null;
-  const B = m ? byId[m.b] : null;
-  const done = tour.status === "done";
-
-  return (
-    <div className="fade-in" style={{ maxWidth: 900, margin: "0 auto" }}>
-      <p style={styles.sectionLabel}>🏆 ТУРНИР · КРУГОВАЯ СИСТЕМА</p>
-      <div style={{ textAlign: "center", color: C.muted, marginBottom: 18 }}>
-        Сыграно матчей: <b style={{ color: C.yellow }}>{played}</b> / {total}
-      </div>
-
-      {done ? (
-        <div style={{ ...styles.verdictPanel, position: "static" }}>
-          <div style={styles.koText}>FINISH</div>
-          <div style={{ ...styles.winnerName, color: C.yellow }}>ТУРНИР ЗАВЕРШЁН!</div>
-          <p style={{ color: "#d7cdec", marginTop: 12 }}>Итоговые места — на турнирной таблице.</p>
-          <a href="#/scoreboard" target="_blank" rel="noreferrer" style={{ ...styles.btn, textDecoration: "none", display: "inline-block", marginTop: 12 }}
-            onClick={(e) => { e.preventDefault(); window.open("#/scoreboard", "debate-scoreboard", "width=1280,height=800"); }}>
-            🏆 ОТКРЫТЬ ТАБЛИЦУ
-          </a>
-        </div>
-      ) : (
-        <>
-          <div style={{ ...styles.panel, textAlign: "center", marginBottom: 18 }}>
-            <div style={{ color: C.muted, fontSize: 13, letterSpacing: 1, marginBottom: 14 }}>СЛЕДУЮЩИЙ МАТЧ #{tour.cursor + 1}</div>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 26 }}>
-              <MatchSide fighter={A} color={C.red} />
-              <div style={{ fontSize: 40, fontWeight: 900, color: C.yellow, fontFamily: "'Arial Black', sans-serif" }}>VS</div>
-              <MatchSide fighter={B} color={C.blue} />
-            </div>
-            {error && <p style={{ color: C.danger, fontWeight: 700, marginTop: 14 }}>{error}</p>}
-            <button style={{ ...styles.btn, marginTop: 18 }} onClick={onPlay} disabled={!A || !B}>▶ ИГРАТЬ МАТЧ</button>
-          </div>
-        </>
-      )}
-
-      {/* Мини-таблица текущих мест */}
-      <div style={styles.panel}>
-        <div style={{ fontWeight: 900, color: C.yellow, marginBottom: 10, letterSpacing: 1 }}>ТЕКУЩИЕ МЕСТА</div>
-        <MiniStandings tour={tour} byId={byId} />
-      </div>
-    </div>
-  );
-}
-
-function MatchSide({ fighter, color }) {
-  if (!fighter) return <div style={{ color: C.muted }}>—</div>;
-  return (
-    <div style={{ textAlign: "center", minWidth: 160 }}>
-      <div style={{ display: "flex", justifyContent: "center", height: 110 }}>
-        <PixelFighter sprite={pickSprite(fighter.id || fighter.name)} color={fighterColor(fighter, color)} glow={fighterColor(fighter, color)} state="idle" facing={1} px={7} />
-      </div>
-      <div style={{ fontWeight: 900, color: fighterColor(fighter, color), fontSize: 17, marginTop: 4 }}>{fighter.name}</div>
-      <div style={{ fontSize: 12, color: C.muted }}>{fighter.stats.points} очк. · {fighter.stats.wins}–{fighter.stats.losses}</div>
-    </div>
-  );
-}
-
-const MEDALS = ["🥇", "🥈", "🥉"];
-function MiniStandings({ tour, byId }) {
-  const rows = [...tour.roster]
-    .map((id) => byId[id])
-    .filter(Boolean)
-    .sort((a, b) => b.stats.points - a.stats.points || b.stats.wins - a.stats.wins || a.stats.losses - b.stats.losses);
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-      {rows.map((p, i) => (
-        <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "5px 8px", borderRadius: 6, background: i === 0 ? "rgba(255,210,63,0.08)" : "transparent" }}>
-          <span style={{ width: 34, fontWeight: 900, color: i < 3 ? C.yellow : C.muted }}>{MEDALS[i] || i + 1}</span>
-          <span style={{ flex: 1, fontWeight: 700 }}>{p.name}</span>
-          <span style={{ color: C.muted, fontSize: 12 }}>{p.stats.wins}–{p.stats.losses}–{p.stats.draws}</span>
-          <span style={{ color: C.yellow, fontWeight: 900, minWidth: 50, textAlign: "right" }}>{p.stats.points}</span>
-        </div>
-      ))}
-    </div>
-  );
-}
 
 /* ---------- VS-заставка ---------- */
 function Versus({ A, B, stanceA, stanceB, topic }) {

@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react";
+import { useNavigate } from "react-router-dom";
 import { styles, C } from "../styles.js";
 import { SKILL_CARDS, SKILL_BY_ID } from "../data/skills.js";
 import {
@@ -25,6 +26,7 @@ import {
 } from "../data/agentConfig.js";
 
 export default function Register() {
+  const navigate = useNavigate();
   const [name, setName] = useState("");
   const [skills, setSkills] = useState([]);
   const [custom, setCustom] = useState("");
@@ -102,6 +104,7 @@ export default function Register() {
     const res = closeAndStart();
     if (res?.error) return setError(res.error);
     setTour(getTournament());
+    navigate("/tournament");
   }
 
   const editing = editingId ? getParticipant(editingId) : null;
@@ -206,11 +209,12 @@ export default function Register() {
         {tour.status === "idle" && (
           <>
             <p style={{ fontSize: 13, color: "#d7cdec", margin: "0 0 12px", lineHeight: 1.5 }}>
-              Когда все бойцы готовы — закрой приём. Возьмём <b>топ-{TOP_N}</b> по очкам разминки и
-              проведём круговой турнир (каждый с каждым). После закрытия апгрейд недоступен.
+              Когда все бойцы готовы — закрой приём. Возьмём <b>топ-{TOP_N}</b> по очкам разминки
+              среди тех, кто сыграл хотя бы один бой, и сформируем турнир (каждый с каждым).
+              После закрытия апгрейд недоступен.
             </p>
             <button type="button" style={styles.btn} onClick={launchTournament} disabled={list.length < 2}>
-              🏁 ЗАКРЫТЬ ПРИЁМ И ЗАПУСТИТЬ ТУРНИР
+              🏁 СФОРМИРОВАТЬ ТУРНИР
             </button>
           </>
         )}
@@ -223,7 +227,7 @@ export default function Register() {
               onClick={(e) => { e.preventDefault(); window.open("#/scoreboard", "debate-scoreboard", "width=1280,height=800"); }}>
               🏆 ТУРНИРНАЯ ТАБЛИЦА ↗
             </a>
-            <a href="#/" style={styles.btnGhost}>🥊 К матчам</a>
+            <a href="#/tournament" style={styles.btnGhost}>🏆 К ТУРНИРУ</a>
             <button type="button" style={{ ...styles.btnGhost, marginLeft: "auto", color: C.danger, borderColor: C.danger }}
               onClick={() => { if (confirm("Сбросить турнир и снова открыть приём заявок?")) { resetTournament(); setTour(getTournament()); } }}>
               ↺ сбросить турнир
