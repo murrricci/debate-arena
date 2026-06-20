@@ -5,6 +5,7 @@ import { fighterFace } from "../lib/agent.js";
 import { subscribe } from "../lib/bus.js";
 import { getTournament, standings, progress } from "../lib/tournament.js";
 import { isTournamentMode, scoreboardTitle, tournamentStateFromEvent } from "../lib/scoreboardState.js";
+import { fetchLiveSnapshot, subscribeLiveSnapshot } from "../lib/liveState.js";
 
 const MEDALS = ["🥇", "🥈", "🥉"];
 
@@ -23,9 +24,13 @@ export default function Scoreboard() {
     }), []);
 
   useEffect(() => {
-    const h = () => { setTour(getTournament()); force((n) => n + 1); };
-    window.addEventListener("storage", h);
-    return () => window.removeEventListener("storage", h);
+    let alive = true;
+    fetchLiveSnapshot().then((snapshot) => { if (alive) setLive(snapshot); }).catch(() => {});
+    const unsubscribe = subscribeLiveSnapshot((snapshot) => setLive(snapshot));
+    return () => {
+      alive = false;
+      unsubscribe();
+    };
   }, []);
 
   const inTournament = isTournamentMode(tour);
@@ -88,7 +93,7 @@ export default function Scoreboard() {
 
       {!inTournament && (
         <div style={{ textAlign: "center", padding: "2vh 0" }}>
-          <button style={S.ghost} onClick={() => { if (confirm("Обнулить очки всех участников?")) { resetScores(); force((n) => n + 1); } }}>
+          <button style={S.ghost} onClick={async () => { if (confirm("Обнулить очки всех участников?")) { await resetScores(); force((n) => n + 1); } }}>
             ↺ обнулить очки
           </button>
         </div>

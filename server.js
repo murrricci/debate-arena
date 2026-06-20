@@ -8,6 +8,13 @@ import { dirname, join, isAbsolute } from "node:path";
 import { timingSafeEqual } from "node:crypto";
 
 import * as agents from "./db.js";
+import {
+  createTournamentFromLeaderboard,
+  markTournamentMatchesRunning,
+  recordTournamentMatchError,
+  recordTournamentMatchResult,
+  startTournament,
+} from "./src/lib/tournamentCore.js";
 import { SKILL_CARDS } from "./src/data/skills.js";
 import {
   DEFAULT_CONFIG,
@@ -132,6 +139,25 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const LOG = process.env.LLM_LOG !== "0";
 const since = (t0) => Date.now() - t0; // мс с момента t0
 const tlog = (...a) => { if (LOG) console.log(...a); };
+
+let liveSnapshot = null;
+const liveClients = new Set();
+
+function liveEnvelope() {
+  return { live: liveSnapshot };
+}
+
+function writeSse(res, event, payload) {
+  res.write(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`);
+}
+
+function setLiveSnapshot(payload) {
+  liveSnapshot = payload && typeof payload === "object"
+    ? { ...payload, updatedAt: Date.now() }
+    : null;
+  for (const res of liveClients) writeSse(res, "live", liveEnvelope());
+  return liveEnvelope();
+}
 
 // Файл с логом обращений в формате JSONL (одна JSON-строка на запрос) — по нему потом можно
 // посчитать реальный бюджет: модель, что ответила, и точные токены вход/выход на каждый вызов.
@@ -403,6 +429,83 @@ app.post("/api/battles", requireArenaKey, (req, res) => {
 app.post("/api/results/reset", requireArenaKey, (req, res) => {
   const ids = Array.isArray(req.body?.ids) ? req.body.ids : null;
   res.json(agents.resetScores(ids));
+});
+
+// --- состояние турнира ---
+app.get("/api/tournament", (_req, res) => {
+  res.json(agents.getTournamentState());
+});
+
+app.post("/api/tournament/close", requireArenaKey, (req, res) => {
+  const next = createTournamentFromLeaderboard(agents.leaderboard(), req.body || {});
+  if (next.error) return res.status(400).json(next);
+  res.json(agents.saveTournamentState(next));
+});
+
+app.post("/api/tournament/start", requireArenaKey, (_req, res) => {
+  res.json(agents.saveTournamentState(startTournament(agents.getTournamentState())));
+});
+
+app.post("/api/tournament/matches/running", requireArenaKey, (req, res) => {
+  const ids = Array.isArray(req.body?.ids) ? req.body.ids : Array.isArray(req.body?.matchIds) ? req.body.matchIds : [];
+  res.json(agents.saveTournamentState(markTournamentMatchesRunning(agents.getTournamentState(), ids)));
+});
+
+app.post("/api/tournament/matches/:id/result", requireArenaKey, (req, res) => {
+  const next = recordTournamentMatchResult(agents.getTournamentState(), {
+    matchId: req.params.id,
+    winner: req.body?.winner,
+    scoreA: req.body?.scoreA,
+    scoreB: req.body?.scoreB,
+    battleId: req.body?.battleId ?? null,
+  });
+  res.json(agents.saveTournamentState(next));
+});
+
+app.post("/api/tournament/matches/:id/error", requireArenaKey, (req, res) => {
+  const next = recordTournamentMatchError(agents.getTournamentState(), {
+    matchId: req.params.id,
+    error: req.body?.error,
+  });
+  res.json(agents.saveTournamentState(next));
+});
+
+app.post("/api/tournament/reset", requireArenaKey, (_req, res) => {
+  res.json(agents.resetTournamentState());
+});
+
+app.post("/api/tournament/import", requireArenaKey, (req, res) => {
+  const current = agents.getTournamentState();
+  if (current.status !== "idle" || current.closed || current.roster.length || current.matches.length) {
+    return res.status(409).json({ error: "tournament_exists", tournament: current });
+  }
+  const incoming = req.body?.tournament && typeof req.body.tournament === "object" ? req.body.tournament : req.body;
+  res.json(agents.saveTournamentState(incoming || {}));
+});
+
+// --- live snapshot текущего боя для табло ---
+app.get("/api/live", (_req, res) => {
+  res.json(liveEnvelope());
+});
+
+app.get("/api/live/events", (req, res) => {
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no",
+  });
+  writeSse(res, "live", liveEnvelope());
+  liveClients.add(res);
+  req.on("close", () => liveClients.delete(res));
+});
+
+app.post("/api/live", requireArenaKey, (req, res) => {
+  res.json(setLiveSnapshot(req.body || null));
+});
+
+app.delete("/api/live", requireArenaKey, (_req, res) => {
+  res.json(setLiveSnapshot(null));
 });
 
 app.get("/api/health", (_req, res) => {

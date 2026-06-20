@@ -140,6 +140,47 @@ async function main() {
   const roster = await (await fetch(`${BASE}/api/agents`)).json();
   check("GET /api/agents: 2 агента в ростере", roster.agents.length === 2);
 
+  // 12. Серверный турнир: состояние не зависит от browser localStorage.
+  const closeRes = await fetch(`${BASE}/api/tournament/close`, authed("POST"));
+  const closedTournament = await closeRes.json();
+  check("POST /api/tournament/close формирует backend-турнир", closeRes.status === 200 && closedTournament.status === "ready" && closedTournament.closed === true);
+  check("backend-турнир содержит матч между агентами", closedTournament.matches.length === 1 && closedTournament.matches[0].a && closedTournament.matches[0].b);
+
+  const tournamentState = await (await fetch(`${BASE}/api/tournament`)).json();
+  check("GET /api/tournament возвращает сохранённый турнир", tournamentState.status === "ready" && tournamentState.matches[0].id === closedTournament.matches[0].id);
+
+  const startRes = await fetch(`${BASE}/api/tournament/start`, authed("POST"));
+  const startedTournament = await startRes.json();
+  check("POST /api/tournament/start переводит ready → running", startRes.status === 200 && startedTournament.status === "running");
+
+  const runningRes = await fetch(`${BASE}/api/tournament/matches/running`, authed("POST", { ids: [closedTournament.matches[0].id] }));
+  const runningTournament = await runningRes.json();
+  check("POST /api/tournament/matches/running отмечает матч running", runningTournament.matches[0].status === "running");
+
+  const matchResultRes = await fetch(`${BASE}/api/tournament/matches/${closedTournament.matches[0].id}/result`, authed("POST", { winner: "A", scoreA: 80, scoreB: 60, battleId: 777 }));
+  const afterMatchTournament = await matchResultRes.json();
+  check("POST /api/tournament/matches/:id/result сохраняет результат", afterMatchTournament.matches[0].status === "done" && afterMatchTournament.matches[0].battleId === 777);
+
+  const resetTourRes = await fetch(`${BASE}/api/tournament/reset`, authed("POST"));
+  const resetTour = await resetTourRes.json();
+  check("POST /api/tournament/reset возвращает idle", resetTour.status === "idle" && resetTour.closed === false);
+
+  // 13. Live snapshot: табло может восстановить текущий бой с backend.
+  const emptyLive = await (await fetch(`${BASE}/api/live`)).json();
+  check("GET /api/live до публикации возвращает null", emptyLive.live === null);
+
+  const livePayload = { phase: "fight", topic: "Тест", round: 2, status: "A отвечает" };
+  const postLiveRes = await fetch(`${BASE}/api/live`, authed("POST", livePayload));
+  const postedLive = await postLiveRes.json();
+  check("POST /api/live сохраняет snapshot", postLiveRes.status === 200 && postedLive.live.topic === "Тест" && postedLive.live.round === 2);
+
+  const gotLive = await (await fetch(`${BASE}/api/live`)).json();
+  check("GET /api/live возвращает последний snapshot", gotLive.live.topic === "Тест" && gotLive.live.phase === "fight");
+
+  const clearLiveRes = await fetch(`${BASE}/api/live`, authed("DELETE"));
+  const clearedLive = await clearLiveRes.json();
+  check("DELETE /api/live очищает snapshot", clearLiveRes.status === 200 && clearedLive.live === null);
+
   console.log(`\n  Итог: ${passed} прошло, ${failed} провалено`);
   return failed ? 1 : 0;
 }

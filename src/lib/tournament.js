@@ -1,284 +1,168 @@
-// Турнир «как в футболе»: круговая система (каждый с каждым) среди топ-10.
-// Состояние живёт в localStorage и рассылается в другие окна (табло) через шину.
-import { publish } from "./bus.js";
+// Backend-backed tournament client. Browser pages render from the in-memory cache
+// populated by /api/tournament. localStorage is read only for one-time legacy migration.
+import { publish, subscribe } from "./bus.js";
 import { getParticipants, leaderboard } from "./store.js";
-import { emptyStats, nextStats } from "./scoring.js";
-import { TOPICS, randomTopic } from "../data/topics.js";
+import {
+  DEFAULT_TOURNAMENT,
+  TOP_N,
+  MAX_TOURNAMENT_CONCURRENCY,
+  cloneTournament,
+  createTournamentFromLeaderboard,
+  queuedMatchesToStart,
+  visibleTournamentMatches,
+  tournamentFightCounts,
+  startTournament,
+  markTournamentMatchesRunning,
+  recordTournamentMatchError,
+  recordTournamentMatchResult,
+  tournamentStandings,
+  selectTournamentRoster,
+} from "./tournamentCore.js";
 
-const TKEY = "debate-arena:tournament";
-export const TOP_N = 10;
-export const MAX_TOURNAMENT_CONCURRENCY = 9;
-
-const DEFAULT = {
-  status: "idle", // idle → ready → running → done
-  closed: false, // приём заявок закрыт
-  roster: [], // зафиксированные id участников (топ-10)
-  matches: [], // [{ id, index, a, b, topicId, stage, tiebreakRound, status, winner, scoreA, scoreB }]
-  statsById: {}, // отдельная турнирная статистика по id участника
-  cursor: 0, // индекс текущего матча
+export {
+  TOP_N,
+  MAX_TOURNAMENT_CONCURRENCY,
+  queuedMatchesToStart,
+  visibleTournamentMatches,
+  tournamentFightCounts,
+  startTournament,
+  markTournamentMatchesRunning,
+  recordTournamentMatchError,
+  recordTournamentMatchResult,
+  tournamentStandings,
+  selectTournamentRoster,
 };
 
-export function getTournament() {
+const TKEY = "debate-arena:tournament";
+const MIGRATED_KEY = "debate-arena:tournament:migrated";
+const POLL_MS = 5000;
+const inBrowser = typeof window !== "undefined" && typeof fetch === "function";
+
+let cache = cloneTournament(DEFAULT_TOURNAMENT);
+let pendingWrites = 0;
+
+function setCache(next, { broadcast = true } = {}) {
+  cache = cloneTournament(next);
+  if (broadcast) publish("tournament", cache);
+  return cache;
+}
+
+function readLegacyTournament() {
   try {
-    return { ...DEFAULT, ...(JSON.parse(localStorage.getItem(TKEY)) || {}) };
+    const parsed = JSON.parse(localStorage.getItem(TKEY));
+    return parsed && typeof parsed === "object" ? cloneTournament(parsed) : null;
   } catch {
-    return { ...DEFAULT };
+    return null;
   }
 }
 
-function save(t) {
-  localStorage.setItem(TKEY, JSON.stringify(t));
-  publish("tournament", t);
-  return t;
+function clearLegacyTournament() {
+  try { localStorage.removeItem(TKEY); } catch { /* ignore */ }
+}
+
+function isDefaultTournament(t) {
+  return t?.status === "idle" && !t?.closed && !(t?.roster || []).length && !(t?.matches || []).length;
+}
+
+async function request(method, url, body) {
+  const res = await fetch(url, {
+    method,
+    headers: body ? { "Content-Type": "application/json" } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const data = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
+  return data;
+}
+
+function track(promise) {
+  pendingWrites++;
+  return promise.finally(() => { pendingWrites--; });
+}
+
+function postTournament(url, body, fallback) {
+  if (!inBrowser) return setCache(fallback);
+  return track(request("POST", url, body)).then((next) => setCache(next));
+}
+
+async function syncFromServer() {
+  if (!inBrowser || pendingWrites > 0) return;
+  try {
+    const res = await fetch("/api/tournament");
+    if (!res.ok) return;
+    const next = await res.json();
+    setCache(next);
+  } catch { /* keep last in-memory snapshot */ }
+}
+
+async function migrateLocalTournamentToServer() {
+  try {
+    if (localStorage.getItem(MIGRATED_KEY)) {
+      clearLegacyTournament();
+      return;
+    }
+    const legacy = readLegacyTournament();
+    if (!legacy || isDefaultTournament(legacy)) {
+      localStorage.setItem(MIGRATED_KEY, "1");
+      clearLegacyTournament();
+      return;
+    }
+    const current = await fetch("/api/tournament").then((r) => (r.ok ? r.json() : null)).catch(() => null);
+    if (current && isDefaultTournament(current)) {
+      await request("POST", "/api/tournament/import", { tournament: legacy }).catch(() => {});
+    }
+    localStorage.setItem(MIGRATED_KEY, "1");
+    clearLegacyTournament();
+  } catch { /* ignore */ }
+}
+
+if (inBrowser) {
+  (async () => {
+    await migrateLocalTournamentToServer();
+    await syncFromServer();
+    setInterval(syncFromServer, POLL_MS);
+  })();
+}
+
+subscribe((type, payload) => {
+  if (type === "tournament" && payload && typeof payload === "object") setCache(payload, { broadcast: false });
+});
+
+export function getTournament() {
+  return cloneTournament(cache);
 }
 
 export function isRegistrationClosed() {
   return getTournament().closed;
 }
 
-function makeMatch({ index, a, b, stage = "main", tiebreakRound = null }) {
-  return {
-    id: `m-${index}`,
-    index,
-    a,
-    b,
-    topicId: randomTopic().id,
-    stage,
-    tiebreakRound,
-    status: "queued",
-    played: false,
-    winner: null,
-    scoreA: 0,
-    scoreB: 0,
-    battleId: null,
-    error: "",
-    retryOf: null,
-    attempt: 1,
-    supersededBy: null,
-  };
-}
-
-// Круговое расписание (метод многоугольника). Возвращает список пар id.
-function roundRobin(ids, { startIndex = 1, stage = "main", tiebreakRound = null } = {}) {
-  const arr = [...ids];
-  if (arr.length % 2) arr.push(null); // болван для нечётного числа
-  const n = arr.length;
-  const rounds = [];
-  let nextIndex = startIndex;
-  for (let r = 0; r < n - 1; r++) {
-    for (let i = 0; i < n / 2; i++) {
-      const a = arr[i];
-      const b = arr[n - 1 - i];
-      if (a && b) {
-        rounds.push(makeMatch({ index: nextIndex++, a, b, stage, tiebreakRound }));
-      }
-    }
-    // ротация (первый зафиксирован)
-    arr.splice(1, 0, arr.pop());
-  }
-  return rounds;
-}
-
-function statsFor(p) {
-  return { ...emptyStats(), ...(p?.stats || {}) };
-}
-
-function shuffle(list, random = Math.random) {
-  const arr = [...list];
-  for (let i = arr.length - 1; i > 0; i--) {
-    const j = Math.floor(random() * (i + 1));
-    [arr[i], arr[j]] = [arr[j], arr[i]];
-  }
-  return arr;
-}
-
-export function selectTournamentRoster(people = [], { random = Math.random } = {}) {
-  const candidates = people
-    .filter((p) => statsFor(p).battles >= 1)
-    .sort((a, b) => statsFor(b).points - statsFor(a).points);
-  if (candidates.length <= TOP_N) return candidates.map((p) => p.id);
-
-  const boundaryPoints = statsFor(candidates[TOP_N - 1]).points;
-  const guaranteed = candidates.filter((p) => statsFor(p).points > boundaryPoints);
-  const tied = candidates.filter((p) => statsFor(p).points === boundaryPoints);
-  return [
-    ...guaranteed.map((p) => p.id),
-    ...shuffle(tied, random).slice(0, TOP_N - guaranteed.length).map((p) => p.id),
-  ];
-}
-
-export function queuedMatchesToStart(matches = [], limit = MAX_TOURNAMENT_CONCURRENCY) {
-  const active = matches.filter((m) => m.status === "running").length;
-  const slots = Math.max(0, limit - active);
-  return matches.filter((m) => m.status === "queued").slice(0, slots);
-}
-
-export function visibleTournamentMatches(matches = []) {
-  return matches.filter((m) => m.status === "running");
-}
-
-function isSupersededError(match) {
-  return match.status === "error" && Boolean(match.supersededBy);
-}
-
-function isResolvedMatch(match) {
-  return match.status === "done" || isSupersededError(match);
-}
-
-export function tournamentFightCounts(matches = []) {
-  const current = matches.filter((m) => !isSupersededError(m));
-  const played = current.filter((m) => m.status === "done").length;
-  const remaining = current.length - played;
-  return { played, remaining, total: current.length };
-}
-
-export function startTournament(t = getTournament()) {
-  return t.status === "ready" ? { ...t, status: "running" } : t;
-}
-
-export function markTournamentMatchesRunning(t, matchIds = []) {
-  const ids = new Set(matchIds);
-  return {
-    ...t,
-    matches: t.matches.map((m) =>
-      ids.has(m.id) && m.status === "queued" ? { ...m, status: "running", error: "" } : m
-    ),
-  };
-}
-
-export function recordTournamentMatchError(t, { matchId, error }) {
-  const match = t.matches.find((m) => m.id === matchId);
-  if (!match) return t;
-  if (match.status === "error" && match.supersededBy) return t;
-  const retry = {
-    ...makeMatch({
-      index: maxMatchIndex(t.matches) + 1,
-      a: match.a,
-      b: match.b,
-      stage: match.stage || "main",
-      tiebreakRound: match.tiebreakRound ?? null,
-    }),
-    topicId: match.topicId,
-    retryOf: match.retryOf || match.id,
-    attempt: (match.attempt || 1) + 1,
-  };
-  const matches = [
-    ...t.matches.map((m) =>
-      m.id === matchId
-        ? { ...m, status: "error", error: String(error || "Ошибка боя"), supersededBy: retry.id }
-        : m
-    ),
-    retry,
-  ];
-  const cursor = matches.findIndex((m) => !isResolvedMatch(m));
-  return {
-    ...t,
-    matches,
-    cursor: cursor === -1 ? matches.length : cursor,
-  };
-}
-
 export function beginTournament() {
-  return save(startTournament());
+  const fallback = startTournament(getTournament());
+  return postTournament("/api/tournament/start", {}, fallback);
 }
 
 export function markMatchesRunning(matchIds = []) {
-  return save(markTournamentMatchesRunning(getTournament(), matchIds));
+  const fallback = markTournamentMatchesRunning(getTournament(), matchIds);
+  return postTournament("/api/tournament/matches/running", { ids: matchIds }, fallback);
 }
 
 export function recordMatchError({ matchId, error }) {
-  return save(recordTournamentMatchError(getTournament(), { matchId, error }));
+  const fallback = recordTournamentMatchError(getTournament(), { matchId, error });
+  return postTournament(`/api/tournament/matches/${encodeURIComponent(matchId)}/error`, { error }, fallback);
 }
 
-function initialStatsById(roster) {
-  return Object.fromEntries(roster.map((id) => [id, emptyStats()]));
-}
-
-function maxMatchIndex(matches = []) {
-  return matches.reduce((max, m) => Math.max(max, m.index || 0), 0);
-}
-
-function nextTiebreakRound(matches = []) {
-  return matches.reduce((max, m) => Math.max(max, m.tiebreakRound || 0), 0) + 1;
-}
-
-function leadersByPoints(roster = [], statsById = {}) {
-  if (!roster.length) return [];
-  let maxPoints = -Infinity;
-  for (const id of roster) {
-    const points = statsById[id]?.points || 0;
-    if (points > maxPoints) maxPoints = points;
-  }
-  return roster.filter((id) => (statsById[id]?.points || 0) === maxPoints);
-}
-
-export function recordTournamentMatchResult(t, { matchId, winner, scoreA = 0, scoreB = 0, battleId = null }) {
-  const match = t.matches.find((m) => m.id === matchId);
-  if (!match) return t;
-  const statsById = { ...initialStatsById(t.roster), ...(t.statsById || {}) };
-  statsById[match.a] = nextStats(statsById[match.a], "A", { winner, scoreA, scoreB });
-  statsById[match.b] = nextStats(statsById[match.b], "B", { winner, scoreA, scoreB });
-  const matches = t.matches.map((m) =>
-    m.id === matchId ? { ...m, status: "done", played: true, winner, scoreA, scoreB, battleId, error: "" } : m
-  );
-  let nextMatches = matches;
-  let status = t.status === "idle" ? "ready" : t.status;
-  if (matches.every(isResolvedMatch)) {
-    const leaders = leadersByPoints(t.roster, statsById);
-    if (leaders.length > 1) {
-      const tiebreakRound = nextTiebreakRound(matches);
-      const extra = roundRobin(leaders, {
-        startIndex: maxMatchIndex(matches) + 1,
-        stage: "tiebreak",
-        tiebreakRound,
-      });
-      nextMatches = [...matches, ...extra];
-      status = "running";
-    } else {
-      status = "done";
-    }
-  }
-  const cursor = nextMatches.findIndex((m) => !isResolvedMatch(m));
-  return { ...t, matches: nextMatches, statsById, status, cursor: cursor === -1 ? nextMatches.length : cursor };
-}
-
-export function tournamentStandings(t, people = getParticipants()) {
-  const byId = Object.fromEntries(people.map((p) => [p.id, p]));
-  const statsById = { ...initialStatsById(t.roster || []), ...(t.statsById || {}) };
-  return [...(t.roster || [])]
-    .map((id) => {
-      const p = byId[id];
-      return p ? { ...p, tourStats: { ...emptyStats(), ...(statsById[id] || {}) } } : null;
-    })
-    .filter(Boolean)
-    .sort(
-      (a, b) =>
-        b.tourStats.points - a.tourStats.points ||
-        b.tourStats.wins - a.tourStats.wins ||
-        a.tourStats.losses - b.tourStats.losses
-    );
-}
-
-// Закрыть приём заявок + сформировать турнир из топ-N по очкам разминки.
 export function closeAndStart(options = {}) {
-  const roster = selectTournamentRoster(leaderboard(), options);
-  if (roster.length < 2) return { error: "Нужно минимум 2 участника с хотя бы одним боем для турнира." };
-
-  const matches = roundRobin(roster);
-
-  return save({
-    status: "ready",
-    closed: true,
-    roster,
-    matches,
-    statsById: initialStatsById(roster),
-    cursor: 0,
-  });
+  const fallback = createTournamentFromLeaderboard(leaderboard(), options);
+  if (fallback.error || !inBrowser) {
+    if (!fallback.error) setCache(fallback);
+    return fallback;
+  }
+  return postTournament("/api/tournament/close", options, fallback);
 }
 
-// Только закрыть приём (без старта) — на случай, если ведущий хочет паузу.
 export function closeRegistration() {
-  return save({ ...getTournament(), closed: true });
+  const fallback = { ...getTournament(), closed: true };
+  return postTournament("/api/tournament/import", { tournament: fallback }, fallback);
 }
 
 export function currentMatch() {
@@ -287,28 +171,29 @@ export function currentMatch() {
   return t.matches.find((m) => m.status === "queued" || m.status === "running") || null;
 }
 
-// Записать результат текущего матча и сдвинуть курсор.
 export function recordMatchResult({ matchId, winner, scoreA, scoreB, battleId = null }) {
   const t = getTournament();
   if (!["ready", "running"].includes(t.status)) return t;
   const match = matchId ? t.matches.find((m) => m.id === matchId) : currentMatch();
   if (!match) return t;
-  return save(recordTournamentMatchResult(t, { matchId: match.id, winner, scoreA, scoreB, battleId }));
+  const fallback = recordTournamentMatchResult(t, { matchId: match.id, winner, scoreA, scoreB, battleId });
+  return postTournament(
+    `/api/tournament/matches/${encodeURIComponent(match.id)}/result`,
+    { winner, scoreA, scoreB, battleId },
+    fallback
+  );
 }
 
-// Полный сброс турнира (вернуться к свободной регистрации).
 export function resetTournament() {
-  return save({ ...DEFAULT });
+  return postTournament("/api/tournament/reset", {}, cloneTournament(DEFAULT_TOURNAMENT));
 }
 
-// Турнирная таблица: только участники ростера, отсортированные по очкам.
 export function standings() {
   const t = getTournament();
   if (!t.roster.length) return [];
-  return tournamentStandings(t);
+  return tournamentStandings(t, getParticipants());
 }
 
 export function progress() {
-  const t = getTournament();
-  return tournamentFightCounts(t.matches);
+  return tournamentFightCounts(getTournament().matches);
 }
