@@ -3,6 +3,7 @@ import { Routes, Route, NavLink, useLocation } from "react-router-dom";
 import { styles, css } from "./styles.js";
 import Arena from "./pages/Arena.jsx";
 import Register from "./pages/Register.jsx";
+import Tournament from "./pages/Tournament.jsx";
 import Scoreboard from "./pages/Scoreboard.jsx";
 import Guide from "./pages/Guide.jsx";
 
@@ -29,6 +30,7 @@ export default function App() {
           <nav style={styles.nav}>
             <Nav to="/" label="🥊 АРЕНА" />
             <Nav to="/register" label="📝 УЧАСТНИКИ" />
+            <Nav to="/tournament" label="🏆 ТУРНИР" />
             <Nav to="/guide" label="📖 ИНСТРУКЦИЯ" />
             <BoardLink />
           </nav>
@@ -38,6 +40,7 @@ export default function App() {
       <Routes>
         <Route path="/" element={<Arena />} />
         <Route path="/register" element={<Register />} />
+        <Route path="/tournament" element={<Tournament />} />
         <Route path="/guide" element={<Guide />} />
         <Route path="/scoreboard" element={<Scoreboard />} />
       </Routes>

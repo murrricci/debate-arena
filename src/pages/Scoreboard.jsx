@@ -63,20 +63,23 @@ export default function Scoreboard() {
               </tr>
             </thead>
             <tbody>
-              {rows.map((p, i) => (
-                <tr key={p.id} style={{ background: i < 3 ? `rgba(255,210,63,${0.12 - i * 0.03})` : "transparent" }}>
-                  <td style={{ ...S.td, ...S.rank, color: i < 3 ? C.yellow : C.muted }}>{MEDALS[i] || i + 1}</td>
-                  <td style={S.td}>
-                    <span style={{ fontSize: "2.4vh", marginRight: "1.4vh" }}>{fighterFace(p)}</span>
-                    <b style={{ fontSize: "2.8vh" }}>{p.name}</b>
-                  </td>
-                  <td style={{ ...S.td, textAlign: "center", color: C.muted }}>{p.stats.battles}</td>
-                  <td style={{ ...S.td, textAlign: "center" }}>
-                    <span style={{ color: C.green }}>{p.stats.wins}</span> · <span style={{ color: C.danger }}>{p.stats.losses}</span> · <span style={{ color: C.muted }}>{p.stats.draws}</span>
-                  </td>
-                  <td style={{ ...S.td, ...S.points }}>{p.stats.points}</td>
-                </tr>
-              ))}
+              {rows.map((p, i) => {
+                const st = inTournament ? p.tourStats : p.stats;
+                return (
+                  <tr key={p.id} style={{ background: i < 3 ? `rgba(255,210,63,${0.12 - i * 0.03})` : "transparent" }}>
+                    <td style={{ ...S.td, ...S.rank, color: i < 3 ? C.yellow : C.muted }}>{MEDALS[i] || i + 1}</td>
+                    <td style={S.td}>
+                      <span style={{ fontSize: "2.4vh", marginRight: "1.4vh" }}>{fighterFace(p)}</span>
+                      <b style={{ fontSize: "2.8vh" }}>{p.name}</b>
+                    </td>
+                    <td style={{ ...S.td, textAlign: "center", color: C.muted }}>{st.battles}</td>
+                    <td style={{ ...S.td, textAlign: "center" }}>
+                      <span style={{ color: C.green }}>{st.wins}</span> · <span style={{ color: C.danger }}>{st.losses}</span> · <span style={{ color: C.muted }}>{st.draws}</span>
+                    </td>
+                    <td style={{ ...S.td, ...S.points }}>{st.points}</td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
