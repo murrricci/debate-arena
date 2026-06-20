@@ -62,6 +62,7 @@ export default function Scoreboard() {
             <thead>
               <tr>
                 <th style={{ ...S.th, width: "8%" }}>#</th>
+                <th style={{ ...S.th, textAlign: "center", width: "12%" }}>№ ПОЛЬЗ.</th>
                 <th style={S.th}>БОЕЦ</th>
                 <th style={{ ...S.th, textAlign: "center", width: "12%" }}>БОИ</th>
                 <th style={{ ...S.th, textAlign: "center", width: "20%" }}>В · П · Н</th>
@@ -74,6 +75,7 @@ export default function Scoreboard() {
                 return (
                   <tr key={p.id} style={{ background: i < 3 ? `rgba(255,210,63,${0.12 - i * 0.03})` : "transparent" }}>
                     <td style={{ ...S.td, ...S.rank, color: i < 3 ? C.yellow : C.muted }}>{MEDALS[i] || i + 1}</td>
+                    <td style={{ ...S.td, ...S.userNumber }}>{p.externalId ? `#${p.externalId}` : "—"}</td>
                     <td style={S.td}>
                       <span style={{ fontSize: "2.4vh", marginRight: "1.4vh" }}>{fighterFace(p)}</span>
                       <b style={{ fontSize: "2.8vh" }}>{p.name}</b>
@@ -163,6 +165,7 @@ const S = {
   th: { textAlign: "left", padding: "1.2vh 1.4vw", color: C.muted, fontSize: "1.7vh", letterSpacing: 2, borderBottom: `2px solid ${C.border}` },
   td: { padding: "1.3vh 1.4vw", borderBottom: `1px solid ${C.border}` },
   rank: { fontWeight: 900, fontSize: "3.4vh" },
+  userNumber: { textAlign: "center", color: C.muted, fontWeight: 900, whiteSpace: "nowrap" },
   points: { fontWeight: 900, fontSize: "3.4vh", color: C.yellow, textAlign: "right" },
   empty: { flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: C.muted, fontSize: "2.5vh" },
   ghost: { background: "transparent", color: C.text, border: `2px solid ${C.border}`, padding: "1vh 2vw", fontWeight: 700, borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: "1.6vh" },
