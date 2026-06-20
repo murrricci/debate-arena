@@ -10,6 +10,7 @@ import { roundJudgeSystem, finalJudgeSystem, roundDamage, judgeFeedbackMessage, 
 import { pickModel, MODEL_TIERS } from "../lib/models.js";
 import { getConfig, replyWords, temperatureValue, memoryWindow, usesJudge } from "../data/agentConfig.js";
 import { pickSprite } from "../data/sprites.js";
+import { filterFighters, fighterOptionLabel } from "../lib/fighterSearch.js";
 import PixelFighter from "../components/PixelFighter.jsx";
 import PixelArena from "../components/PixelArena.jsx";
 
@@ -360,29 +361,144 @@ function Selection({ people, aId, setAId, bId, setBId, topic, topicId, setTopicI
 
 function FighterSelect({ side, color, value, onChange, people, disabledId }) {
   const sel = people.find((p) => p.id === value);
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
+  const matches = filterFighters(people, query, disabledId).slice(0, 8);
+  const shownValue = open ? query : fighterOptionLabel(sel);
+
+  function choose(fighter) {
+    onChange(fighter.id);
+    setQuery("");
+    setOpen(false);
+  }
+
+  function typeQuery(next) {
+    setQuery(next);
+    setOpen(true);
+    if (value) onChange("");
+  }
+
   return (
-    <div style={{ ...styles.pickerCol, borderColor: color }}>
+    <div style={{ ...styles.pickerCol, borderColor: color, position: "relative" }}>
       <div style={{ ...styles.playerTag, background: color }}>{side}</div>
-      <select style={{ ...styles.input, marginBottom: 12 }} value={value} onChange={(e) => onChange(e.target.value)}>
-        <option value="">— выбери бойца —</option>
-        {people.map((p) => (
-          <option key={p.id} value={p.id} disabled={p.id === disabledId}>
-            {p.name} ({p.stats.points} очк.)
-          </option>
-        ))}
-      </select>
+      <div style={{ position: "relative", marginBottom: 12 }}>
+        <input
+          style={{ ...styles.input, paddingRight: value ? 42 : 14 }}
+          value={shownValue}
+          onChange={(e) => typeQuery(e.target.value)}
+          onFocus={(e) => { setQuery(""); setOpen(true); e.currentTarget.select(); }}
+          onBlur={() => window.setTimeout(() => setOpen(false), 120)}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") setOpen(false);
+            if (e.key === "Enter" && matches.length === 1) {
+              e.preventDefault();
+              choose(matches[0]);
+            }
+          }}
+          placeholder="Ник или #номер пользователя"
+          role="combobox"
+          aria-expanded={open}
+          aria-label={`${side}: поиск бойца по нику или номеру пользователя`}
+        />
+        {value && (
+          <button
+            type="button"
+            title="Сбросить выбор"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => { onChange(""); setQuery(""); setOpen(true); }}
+            style={fighterSearchStyles.clear}
+          >
+            ×
+          </button>
+        )}
+        {open && (
+          <div role="listbox" style={fighterSearchStyles.menu}>
+            {matches.length > 0 ? matches.map((p) => (
+              <button
+                type="button"
+                key={p.id}
+                role="option"
+                aria-selected={p.id === value}
+                onMouseDown={(e) => { e.preventDefault(); choose(p); }}
+                style={{
+                  ...fighterSearchStyles.option,
+                  borderColor: p.id === value ? color : "transparent",
+                  background: p.id === value ? `${color}22` : "transparent",
+                }}
+              >
+                <span style={fighterSearchStyles.optionName}>{p.name}</span>
+                {p.externalId && <span style={fighterSearchStyles.optionId}>#{p.externalId}</span>}
+                <span style={fighterSearchStyles.optionStats}>{p.stats.points} очк.</span>
+              </button>
+            )) : (
+              <div style={fighterSearchStyles.empty}>Ничего не найдено</div>
+            )}
+          </div>
+        )}
+      </div>
       {sel && (
         <div style={{ textAlign: "center" }}>
           <div style={{ fontSize: 48 }}>{fighterFace(sel)}</div>
           <div style={{ fontWeight: 900, fontSize: 18, color, marginTop: 4 }}>{sel.name}</div>
           <div style={{ fontSize: 12, color: C.muted, marginTop: 6 }}>
-            {sel.skills.map((id) => id).length} скиллов · {sel.stats.wins}–{sel.stats.losses}
+            {sel.externalId ? `#${sel.externalId} · ` : ""}{sel.skills.map((id) => id).length} скиллов · {sel.stats.wins}–{sel.stats.losses}
           </div>
         </div>
       )}
     </div>
   );
 }
+
+const fighterSearchStyles = {
+  menu: {
+    position: "absolute",
+    top: "calc(100% + 6px)",
+    left: 0,
+    right: 0,
+    zIndex: 30,
+    maxHeight: 230,
+    overflowY: "auto",
+    background: C.card,
+    border: `2px solid ${C.border}`,
+    borderRadius: 8,
+    boxShadow: "0 14px 30px rgba(0,0,0,0.42)",
+    padding: 6,
+  },
+  option: {
+    width: "100%",
+    display: "grid",
+    gridTemplateColumns: "minmax(0, 1fr) auto auto",
+    gap: 8,
+    alignItems: "center",
+    background: "transparent",
+    border: "2px solid transparent",
+    borderRadius: 6,
+    color: C.text,
+    padding: "8px 10px",
+    cursor: "pointer",
+    fontFamily: "inherit",
+    textAlign: "left",
+  },
+  optionName: { minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: 900 },
+  optionId: { color: C.blue, fontSize: 12, fontWeight: 900, whiteSpace: "nowrap" },
+  optionStats: { color: C.muted, fontSize: 12, whiteSpace: "nowrap" },
+  empty: { color: C.muted, padding: "10px 12px", fontSize: 13 },
+  clear: {
+    position: "absolute",
+    right: 8,
+    top: "50%",
+    transform: "translateY(-50%)",
+    width: 28,
+    height: 28,
+    border: `1px solid ${C.border}`,
+    borderRadius: 6,
+    background: "transparent",
+    color: C.muted,
+    cursor: "pointer",
+    fontSize: 18,
+    lineHeight: "24px",
+  },
+};
 
 /* ---------- Экран турнира ---------- */
 function TournamentSelect({ tour, people, onPlay, error }) {
