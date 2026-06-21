@@ -3,10 +3,9 @@
 // простыми для страниц. localStorage не участвует в отображении: он читается только
 // одноразово для миграции старых данных в backend.
 import { publish, subscribe } from "./bus.js";
-import { nextStats, sortLeaderboard, emptyStats, MAX_UPGRADES } from "./scoring.js";
+import { nextStats, sortLeaderboard, emptyStats, MAX_UPGRADES, MAX_WARMUP_BATTLES } from "./scoring.js";
 
-export { MAX_UPGRADES };
-export const MAX_WARMUP_BATTLES = 3;
+export { MAX_UPGRADES, MAX_WARMUP_BATTLES };
 
 const KEY = "debate-arena:participants";
 const MIGRATED_KEY = "debate-arena:migrated";

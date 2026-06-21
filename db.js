@@ -10,7 +10,7 @@ import { mkdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join, isAbsolute } from "node:path";
 
-import { nextStats, emptyStats, sortLeaderboard, MAX_UPGRADES } from "./src/lib/scoring.js";
+import { nextStats, emptyStats, sortLeaderboard, MAX_UPGRADES, MAX_WARMUP_BATTLES } from "./src/lib/scoring.js";
 import { DEFAULT_TOURNAMENT, cloneTournament } from "./src/lib/tournamentCore.js";
 import { SKILL_CARDS } from "./src/data/skills.js";
 import {
@@ -23,7 +23,7 @@ import {
   TEMPERATURE_MAX,
 } from "./src/data/agentConfig.js";
 
-export { MAX_UPGRADES };
+export { MAX_UPGRADES, MAX_WARMUP_BATTLES };
 
 const SKILL_IDS = new Set(SKILL_CARDS.map((s) => s.id));
 const MEMORY_IDS = new Set(MEMORY_OPTIONS.map((o) => o.id));
@@ -294,20 +294,28 @@ function insertBattleRow({ aId, bId, winner, scoreA = 0, scoreB = 0, topic = nul
 export function applyResult({ aId, bId, winner, scoreA = 0, scoreB = 0, topic = null, tournament = false, history = null } = {}) {
   if (!["A", "B", "draw"].includes(winner)) return { error: "validation", detail: "winner" };
   return inTx(() => {
-    const update = (id, role) => {
-      const row = db.prepare("SELECT * FROM agents WHERE id = ?").get(id);
-      if (!row) return null;
+    const aRow = db.prepare("SELECT * FROM agents WHERE id = ?").get(aId);
+    const bRow = db.prepare("SELECT * FROM agents WHERE id = ?").get(bId);
+    if (!aRow || !bRow) return { error: "validation", detail: "agents" };
+
+    const beforeA = rowToParticipant(aRow);
+    const beforeB = rowToParticipant(bRow);
+    if (!tournament && (beforeA.stats.battles >= MAX_WARMUP_BATTLES || beforeB.stats.battles >= MAX_WARMUP_BATTLES)) {
+      return { error: "warmup_limit_reached", limit: MAX_WARMUP_BATTLES, a: beforeA, b: beforeB };
+    }
+
+    const update = (row, role) => {
       const s = nextStats(
         { wins: row.wins, losses: row.losses, draws: row.draws, battles: row.battles, points: row.points },
         role,
         { winner, scoreA, scoreB }
       );
       db.prepare("UPDATE agents SET wins=?, losses=?, draws=?, battles=?, points=? WHERE id=?")
-        .run(s.wins, s.losses, s.draws, s.battles, s.points, id);
-      return getAgentById(id);
+        .run(s.wins, s.losses, s.draws, s.battles, s.points, row.id);
+      return getAgentById(row.id);
     };
-    const a = update(aId, "A");
-    const b = update(bId, "B");
+    const a = update(aRow, "A");
+    const b = update(bRow, "B");
     const battleId = insertBattleRow({ aId, bId, winner, scoreA, scoreB, topic, tournament, history });
     return { a, b, battleId };
   });

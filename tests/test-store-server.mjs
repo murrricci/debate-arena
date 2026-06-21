@@ -108,7 +108,21 @@ check("в истории пользователя есть ссылка на б�
 resetScores();
 check("после сброса у всех 0 очков и 0 боёв", leaderboard().every((p) => p.stats.points === 0 && p.stats.battles === 0));
 
-// 9. Удаление.
+// 9. Лимит разминочных боёв должен enforced на серверном хранилище, а не только в UI.
+const limitA = createAgent({ externalId: "limit-a", name: "Лимит A", skills: ["aggressor"] });
+const limitB = createAgent({ externalId: "limit-b", name: "Лимит B", skills: ["factualist"] });
+for (let i = 1; i <= 3; i++) {
+  const r = applyResult({ aId: limitA.agent.id, bId: limitB.agent.id, winner: "A", scoreA: 80, scoreB: 60, topic: `Лимит ${i}`, tournament: false });
+  check(`разминка #${i} для пары лимита проходит`, !r.error && r.a.stats.battles === i && r.b.stats.battles === i);
+}
+const beforeOverA = getAgentById(limitA.agent.id).stats;
+const beforeOverB = getAgentById(limitB.agent.id).stats;
+const overWarmup = applyResult({ aId: limitA.agent.id, bId: limitB.agent.id, winner: "A", scoreA: 80, scoreB: 60, topic: "Лишняя разминка", tournament: false });
+check("4-я разминка отклоняется сервером → warmup_limit_reached", overWarmup.error === "warmup_limit_reached");
+check("после отклонения stats A не меняются", JSON.stringify(getAgentById(limitA.agent.id).stats) === JSON.stringify(beforeOverA));
+check("после отклонения stats B не меняются", JSON.stringify(getAgentById(limitB.agent.id).stats) === JSON.stringify(beforeOverB));
+
+// 10. Удаление.
 removeAgent(b.agent.id);
 check("после удаления агент не находится", getAgentById(b.agent.id) === null);
 

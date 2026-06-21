@@ -5,6 +5,7 @@
 // Формула одна → оптимистичное значение совпадает с серверным, дрейфа нет.
 
 export const MAX_UPGRADES = 3; // сколько раз агента можно отредактировать после создания
+export const MAX_WARMUP_BATTLES = 3; // сколько раз агент может сыграть в разминке до турнира
 
 export function emptyStats() {
   return { wins: 0, losses: 0, draws: 0, battles: 0, points: 0 };

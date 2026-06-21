@@ -165,7 +165,27 @@ async function main() {
   const resetTour = await resetTourRes.json();
   check("POST /api/tournament/reset возвращает idle", resetTour.status === "idle" && resetTour.closed === false);
 
-  // 13. Live snapshot: табло может восстановить текущий бой с backend.
+  // 13. Backend должен блокировать 4-й разминочный бой и не менять статистику.
+  const limitA = await (await fetch(`${BASE}/api/agents`, authed("POST", { externalId: "limit-a", name: "Лимит A", skills: ["aggressor"] }))).json();
+  const limitB = await (await fetch(`${BASE}/api/agents`, authed("POST", { externalId: "limit-b", name: "Лимит B", skills: ["factualist"] }))).json();
+  for (let i = 1; i <= 3; i++) {
+    const r = await fetch(`${BASE}/api/results`, authed("POST", { aId: limitA.id, bId: limitB.id, winner: "A", scoreA: 80, scoreB: 60, topic: `Лимит ${i}`, tournament: false }));
+    const j = await r.json();
+    check(`POST /api/results разминка #${i} → 200`, r.status === 200 && j.a.stats.battles === i && j.b.stats.battles === i);
+  }
+  const beforeOver = await (await fetch(`${BASE}/api/agents`)).json();
+  const beforeLimitA = beforeOver.agents.find((p) => p.id === limitA.id);
+  const beforeLimitB = beforeOver.agents.find((p) => p.id === limitB.id);
+  const overWarmupRes = await fetch(`${BASE}/api/results`, authed("POST", { aId: limitA.id, bId: limitB.id, winner: "A", scoreA: 80, scoreB: 60, topic: "Лишняя разминка", tournament: false }));
+  const overWarmupJson = await overWarmupRes.json();
+  check("POST /api/results 4-я разминка → 403 warmup_limit_reached", overWarmupRes.status === 403 && overWarmupJson.error === "warmup_limit_reached");
+  const afterOver = await (await fetch(`${BASE}/api/agents`)).json();
+  const afterLimitA = afterOver.agents.find((p) => p.id === limitA.id);
+  const afterLimitB = afterOver.agents.find((p) => p.id === limitB.id);
+  check("после 4-й разминки stats A не меняются", JSON.stringify(afterLimitA.stats) === JSON.stringify(beforeLimitA.stats));
+  check("после 4-й разминки stats B не меняются", JSON.stringify(afterLimitB.stats) === JSON.stringify(beforeLimitB.stats));
+
+  // 14. Live snapshot: табло может восстановить текущий бой с backend.
   const emptyLive = await (await fetch(`${BASE}/api/live`)).json();
   check("GET /api/live до публикации возвращает null", emptyLive.live === null);
 

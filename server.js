@@ -396,6 +396,7 @@ app.delete("/api/agents/:id", requireArenaKey, (req, res) => {
 app.post("/api/results", requireArenaKey, (req, res) => {
   const r = agents.applyResult(req.body || {});
   if (r.error === "validation") return res.status(400).json({ error: "validation", detail: r.detail });
+  if (r.error === "warmup_limit_reached") return res.status(403).json(r);
   res.json({ a: r.a, b: r.b, battleId: r.battleId });
 });
 
