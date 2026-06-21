@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { styles, C } from "../styles.js";
 import { getParticipants } from "../lib/store.js";
@@ -8,25 +8,17 @@ import {
   getTournament,
   standings,
   beginTournament,
-  markMatchesRunning,
-  recordMatchResult,
-  recordMatchError,
-  queuedMatchesToStart,
   visibleTournamentMatches,
   tournamentFightCounts,
   MAX_TOURNAMENT_CONCURRENCY,
 } from "../lib/tournament.js";
 import { TOPICS } from "../data/topics.js";
-import { runDebateFight } from "../lib/fightRunner.js";
-import { saveTournamentBattle } from "../lib/battleHistory.js";
 
 const MEDALS = ["🥇", "🥈", "🥉"];
-const NO_DELAYS = { intro: 0, afterReply: 0, afterJudge: 0, afterShake: 0 };
 
 export default function Tournament() {
   const [tour, setTour] = useState(getTournament());
   const [people, setPeople] = useState(getParticipants());
-  const activeRef = useRef(new Set());
 
   useEffect(() =>
     subscribe((type) => {
@@ -51,27 +43,6 @@ export default function Tournament() {
   const errorCount = tour.matches.filter((m) => m.status === "error").length;
   const activeTiebreak = activeTiebreakRound(tour);
   const liveMatches = visibleTournamentMatches(tour.matches);
-
-  useEffect(() => {
-    if (tour.status !== "running") return;
-    const matches = queuedMatchesToStart(tour.matches, MAX_TOURNAMENT_CONCURRENCY)
-      .filter((m) => !activeRef.current.has(m.id));
-    if (!matches.length) return;
-
-    let cancelled = false;
-    matches.forEach((m) => activeRef.current.add(m.id));
-    markMatchesRunning(matches.map((m) => m.id))
-      .then((marked) => {
-        if (cancelled) return;
-        setTour(marked);
-        matches.forEach((m) => runTournamentMatch(m, byId, topicById, activeRef, setTour));
-      })
-      .catch((e) => {
-        matches.forEach((m) => activeRef.current.delete(m.id));
-        console.warn("Не удалось отметить турнирные матчи running:", e.message);
-      });
-    return () => { cancelled = true; };
-  }, [tour.status, tour.matches, byId, topicById]);
 
   async function startQueue() {
     if (!confirm("Запустить турнирные бои? Очередь начнёт проводить матчи автоматически, а разминка останется закрытой до отмены турнира.")) return;
@@ -159,38 +130,6 @@ export default function Tournament() {
       )}
     </div>
   );
-}
-
-async function runTournamentMatch(match, byId, topicById, activeRef, setTour) {
-  const A = byId[match.a];
-  const B = byId[match.b];
-  const topic = topicById[match.topicId] || TOPICS[0];
-  try {
-    if (!A || !B) throw new Error("Боец матча не найден");
-    const result = await runDebateFight({
-      aF: A,
-      bF: B,
-      topic,
-      swap: false,
-      delays: NO_DELAYS,
-      waitFor: async () => {},
-      onEvent: () => {},
-    });
-    let battleId = null;
-    try {
-      const saved = await saveTournamentBattle({ A, B, topic, result, match });
-      battleId = saved?.battleId ?? null;
-    } catch (e) {
-      console.warn("Не удалось сохранить историю турнирного боя:", e.message);
-    }
-    const next = await recordMatchResult({ matchId: match.id, winner: result.winner, scoreA: result.scoreA, scoreB: result.scoreB, battleId });
-    setTour(next);
-  } catch (e) {
-    const next = await recordMatchError({ matchId: match.id, error: e.message });
-    setTour(next);
-  } finally {
-    activeRef.current.delete(match.id);
-  }
 }
 
 function TournamentTable({ rows }) {

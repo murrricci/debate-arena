@@ -25,9 +25,19 @@ const authed = (method, body, withKey = true) => ({
   ...(body ? { body: JSON.stringify(body) } : {}),
 });
 
+async function waitForTournamentDone({ timeoutMs = 2000 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const t = await (await fetch(`${BASE}/api/tournament`)).json();
+    if (t.status === "done") return t;
+    await sleep(50);
+  }
+  return await (await fetch(`${BASE}/api/tournament`)).json();
+}
+
 const server = spawn("node", ["server.js"], {
   cwd: ROOT,
-  env: { ...process.env, PORT: String(PORT), ARENA_API_KEY: KEY, ARENA_DB_FILE: ":memory:", LLM_LOG: "0", LLM_LOG_FILE: "0" },
+  env: { ...process.env, PORT: String(PORT), ARENA_API_KEY: KEY, ARENA_DB_FILE: ":memory:", LLM_LOG: "0", LLM_LOG_FILE: "0", TEST_TOURNAMENT_WORKER_FAKE: "1" },
   stdio: ["ignore", "pipe", "pipe"],
 });
 let serverOut = "";
@@ -149,7 +159,7 @@ async function main() {
   const tournamentState = await (await fetch(`${BASE}/api/tournament`)).json();
   check("GET /api/tournament возвращает сохранённый турнир", tournamentState.status === "ready" && tournamentState.matches[0].id === closedTournament.matches[0].id);
 
-  const startRes = await fetch(`${BASE}/api/tournament/start`, authed("POST"));
+  const startRes = await fetch(`${BASE}/api/tournament/start`, authed("POST", { disableWorker: true }));
   const startedTournament = await startRes.json();
   check("POST /api/tournament/start переводит ready → running", startRes.status === 200 && startedTournament.status === "running");
 
@@ -165,7 +175,35 @@ async function main() {
   const resetTour = await resetTourRes.json();
   check("POST /api/tournament/reset возвращает idle", resetTour.status === "idle" && resetTour.closed === false);
 
-  // 13. Backend должен блокировать 4-й разминочный бой и не менять статистику.
+  // 13. Backend worker сам проводит турнирный матч без браузерной вкладки.
+  const workerCloseRes = await fetch(`${BASE}/api/tournament/close`, authed("POST"));
+  const workerClosed = await workerCloseRes.json();
+  check("worker-сценарий: турнир снова сформирован", workerCloseRes.status === 200 && workerClosed.status === "ready" && workerClosed.matches.length === 1);
+  const workerStartRes = await fetch(`${BASE}/api/tournament/start`, authed("POST"));
+  check("worker-сценарий: start принят", workerStartRes.status === 200);
+  const workerDone = await waitForTournamentDone();
+  check("backend worker доводит турнир до done", workerDone.status === "done" && workerDone.matches[0]?.status === "done" && Number.isInteger(workerDone.matches[0]?.battleId));
+
+  // 14. Recovery endpoint оживляет orphaned running-матчи.
+  await fetch(`${BASE}/api/tournament/reset`, authed("POST"));
+  const staleTournament = {
+    status: "running",
+    closed: true,
+    roster: [created.id, b.id],
+    statsById: {},
+    cursor: 0,
+    matches: [{ id: "m-stale", index: 1, a: created.id, b: b.id, topicId: "tests_first", stage: "main", tiebreakRound: null, status: "running", winner: null, scoreA: 0, scoreB: 0, battleId: null, error: "", attempt: 1, startedAt: 1 }],
+  };
+  const importStaleRes = await fetch(`${BASE}/api/tournament/import`, authed("POST", { tournament: staleTournament }));
+  check("worker recovery: stale tournament imported", importStaleRes.status === 200);
+  const recoverRes = await fetch(`${BASE}/api/tournament/recover-stale`, authed("POST", { now: 10000, timeoutMs: 1 }));
+  const recoveredTournament = await recoverRes.json();
+  const staleMatch = recoveredTournament.matches.find((m) => m.id === "m-stale");
+  const retryMatch = recoveredTournament.matches.find((m) => m.retryOf === "m-stale");
+  check("POST /api/tournament/recover-stale создаёт retry для stale running", recoverRes.status === 200 && staleMatch?.status === "error" && retryMatch?.status === "queued");
+  await fetch(`${BASE}/api/tournament/reset`, authed("POST"));
+
+  // 15. Backend должен блокировать 4-й разминочный бой и не менять статистику.
   const limitA = await (await fetch(`${BASE}/api/agents`, authed("POST", { externalId: "limit-a", name: "Лимит A", skills: ["aggressor"] }))).json();
   const limitB = await (await fetch(`${BASE}/api/agents`, authed("POST", { externalId: "limit-b", name: "Лимит B", skills: ["factualist"] }))).json();
   for (let i = 1; i <= 3; i++) {
@@ -185,7 +223,7 @@ async function main() {
   check("после 4-й разминки stats A не меняются", JSON.stringify(afterLimitA.stats) === JSON.stringify(beforeLimitA.stats));
   check("после 4-й разминки stats B не меняются", JSON.stringify(afterLimitB.stats) === JSON.stringify(beforeLimitB.stats));
 
-  // 14. Live snapshot: табло может восстановить текущий бой с backend.
+  // 16. Live snapshot: табло может восстановить текущий бой с backend.
   const emptyLive = await (await fetch(`${BASE}/api/live`)).json();
   check("GET /api/live до публикации возвращает null", emptyLive.live === null);
 

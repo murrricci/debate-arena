@@ -15,6 +15,14 @@ import {
   recordTournamentMatchResult,
   startTournament,
 } from "./src/lib/tournamentCore.js";
+import {
+  createTournamentWorker,
+  recoverStaleMatches,
+  DEFAULT_TOURNAMENT_MATCH_TIMEOUT_MS,
+} from "./src/lib/tournamentWorker.js";
+import { runDebateFight } from "./src/lib/fightRunner.js";
+import { historyWithMode } from "./src/lib/battleHistory.js";
+import { TOPICS } from "./src/data/topics.js";
 import { SKILL_CARDS } from "./src/data/skills.js";
 import {
   DEFAULT_CONFIG,
@@ -318,6 +326,114 @@ app.post("/api/claude", async (req, res) => {
   });
 });
 
+const topicById = new Map(TOPICS.map((topic) => [topic.id, topic]));
+const TEST_WORKER_FAKE = /^(1|true|yes)$/i.test((process.env.TEST_TOURNAMENT_WORKER_FAKE || "").trim());
+const TOURNAMENT_MATCH_TIMEOUT_MS = (() => {
+  const n = Number(process.env.TOURNAMENT_MATCH_TIMEOUT_MS);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : DEFAULT_TOURNAMENT_MATCH_TIMEOUT_MS;
+})();
+const NO_DELAYS = { intro: 0, afterReply: 0, afterJudge: 0, afterShake: 0 };
+
+async function callClaudeBackend(system, messages, { json = false, maxTokens = 1000, model, tier, temperature, label, judge } = {}) {
+  const t0 = performance.now();
+  const res = await fetch(`http://127.0.0.1:${PORT}/api/claude`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ system, messages, max_tokens: maxTokens, model, tier, temperature, label, judge }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.error || "Ошибка запроса к модели");
+  let text = data.text || "";
+  let parsed = null;
+  if (json) {
+    let raw = text.replace(/```json|```/g, "").trim();
+    const start = raw.indexOf("{");
+    const end = raw.lastIndexOf("}");
+    if (start !== -1 && end !== -1) raw = raw.slice(start, end + 1);
+    parsed = JSON.parse(raw);
+  }
+  return { text, parsed, usage: data.usage, model: data.model, ms: Math.round(performance.now() - t0) };
+}
+
+async function runTournamentFightOnServer({ A, B, topic }) {
+  if (TEST_WORKER_FAKE) {
+    return {
+      winner: "A",
+      scoreA: 80,
+      scoreB: 60,
+      history: {
+        topic: { id: topic.id, title: topic.title, sideA: topic.sideA, sideB: topic.sideB },
+        fighters: { A: { id: A.id, name: A.name }, B: { id: B.id, name: B.name } },
+        rounds: [],
+        final: { winner: "A", score_a: 80, score_b: 60, rationale: "fake worker result" },
+      },
+    };
+  }
+  return runDebateFight({
+    aF: A,
+    bF: B,
+    topic,
+    swap: false,
+    delays: NO_DELAYS,
+    waitFor: async () => {},
+    onEvent: () => {},
+    call: callClaudeBackend,
+  });
+}
+
+async function saveTournamentBattleOnServer({ A, B, topic, result, match }) {
+  return agents.recordBattle({
+    aId: A.id,
+    bId: B.id,
+    winner: result.winner,
+    scoreA: result.scoreA,
+    scoreB: result.scoreB,
+    topic: topic.title,
+    tournament: true,
+    history: historyWithMode(result.history, "tournament", {
+      matchId: match?.id ?? null,
+      matchIndex: match?.index ?? null,
+      matchStage: match?.stage ?? "main",
+      tiebreakRound: match?.tiebreakRound ?? null,
+    }),
+  });
+}
+
+const tournamentWorker = createTournamentWorker({
+  timeoutMs: TOURNAMENT_MATCH_TIMEOUT_MS,
+  getTournament: agents.getTournamentState,
+  saveTournament: agents.saveTournamentState,
+  getAgent: agents.getAgentById,
+  getTopic: (id) => topicById.get(id) || TOPICS[0],
+  runFight: runTournamentFightOnServer,
+  saveBattle: saveTournamentBattleOnServer,
+  onError: (e, match) => console.warn(`⚠️  Турнирный матч ${match?.id || "?"} упал: ${e.message}`),
+});
+
+let tournamentPumpRunning = false;
+async function pumpTournamentWorker() {
+  if (tournamentPumpRunning) return;
+  tournamentPumpRunning = true;
+  try {
+    while (true) {
+      const before = agents.getTournamentState();
+      if (before.status !== "running") return;
+      await tournamentWorker.tick();
+      const after = agents.getTournamentState();
+      if (after.status !== "running") return;
+      if (!after.matches.some((m) => m.status === "queued")) return;
+    }
+  } catch (e) {
+    console.warn(`⚠️  Турнирный worker остановился с ошибкой: ${e.message}`);
+  } finally {
+    tournamentPumpRunning = false;
+  }
+}
+
+function scheduleTournamentWorker() {
+  setTimeout(() => { pumpTournamentWorker(); }, 0);
+}
+
 // ======================= API УПРАВЛЕНИЯ АГЕНТАМИ =======================
 // Контракт согласован с bot-conf-max (см. PLAN_API.md). Форма участника в ответах
 // совпадает с прежним participant — фронт переписывать не нужно.
@@ -443,8 +559,10 @@ app.post("/api/tournament/close", requireArenaKey, (req, res) => {
   res.json(agents.saveTournamentState(next));
 });
 
-app.post("/api/tournament/start", requireArenaKey, (_req, res) => {
-  res.json(agents.saveTournamentState(startTournament(agents.getTournamentState())));
+app.post("/api/tournament/start", requireArenaKey, (req, res) => {
+  const next = agents.saveTournamentState(startTournament(agents.getTournamentState()));
+  if (!req.body?.disableWorker) scheduleTournamentWorker();
+  res.json(next);
 });
 
 app.post("/api/tournament/matches/running", requireArenaKey, (req, res) => {
@@ -469,6 +587,18 @@ app.post("/api/tournament/matches/:id/error", requireArenaKey, (req, res) => {
     error: req.body?.error,
   });
   res.json(agents.saveTournamentState(next));
+});
+
+app.post("/api/tournament/recover-stale", requireArenaKey, (req, res) => {
+  const now = Number(req.body?.now);
+  const timeoutMs = Number(req.body?.timeoutMs);
+  const next = recoverStaleMatches(agents.getTournamentState(), {
+    now: Number.isFinite(now) ? now : Date.now(),
+    timeoutMs: Number.isFinite(timeoutMs) && timeoutMs >= 0 ? timeoutMs : TOURNAMENT_MATCH_TIMEOUT_MS,
+  });
+  const saved = agents.saveTournamentState(next);
+  scheduleTournamentWorker();
+  res.json(saved);
 });
 
 app.post("/api/tournament/reset", requireArenaKey, (_req, res) => {
@@ -526,4 +656,5 @@ app.listen(PORT, () => {
   console.log(`   тайминг-логи: ${LOG ? "вкл (LLM_LOG=0 чтобы выключить)" : "выкл"}`);
   console.log(`   лог-файл: ${LOG_FILE || "выкл (LLM_LOG_FILE=0)"}`);
   console.log(`   API агентов: ${ARENA_KEY ? "вкл (X-Arena-Key)" : "выкл (нет ARENA_API_KEY)"}\n`);
+  if (agents.getTournamentState().status === "running") scheduleTournamentWorker();
 });

@@ -15,12 +15,13 @@ globalThis.BroadcastChannel = class {
 };
 
 const { addParticipant, applyResult, leaderboard, upgradeParticipant, MAX_UPGRADES, canPlayWarmup, MAX_WARMUP_BATTLES } = await import("../src/lib/store.js");
+const { closeAndStart, TOP_N, resetTournament } = await import("../src/lib/tournament.js");
 const {
-  closeAndStart, getTournament, currentMatch, recordMatchResult, standings, progress, TOP_N, resetTournament,
   selectTournamentRoster, queuedMatchesToStart, recordTournamentMatchResult, tournamentStandings, MAX_TOURNAMENT_CONCURRENCY,
   startTournament, markTournamentMatchesRunning, recordTournamentMatchError, visibleTournamentMatches,
   tournamentFightCounts,
-} = await import("../src/lib/tournament.js");
+} = await import("../src/lib/tournamentCore.js");
+const { recoverStaleMatches, createTournamentWorker } = await import("../src/lib/tournamentWorker.js");
 
 let passed = 0, failed = 0;
 const check = (name, cond) => {
@@ -66,20 +67,20 @@ check("каждый боец играет (N-1) матчей", Object.values(cou
 const pairs = new Set(t.matches.map((m) => [m.a, m.b].sort().join("|")));
 check("нет дублей пар и игры с собой", pairs.size === expectedMatches && !t.matches.some((m) => m.a === m.b));
 
-// 3. Прогон всех матчей: всегда побеждает A (первый по расписанию).
+// 3. Прогон всех матчей на pure core: всегда побеждает A (первый по расписанию).
+let done = startTournament(t);
 let guard = 0;
-while (getTournament().status !== "done" && guard++ < 100) {
-  const m = currentMatch();
-  recordMatchResult({ matchId: m.id, winner: "A", scoreA: 80, scoreB: 60 });
+while (done.status !== "done" && guard++ < 100) {
+  const m = done.matches.find((match) => match.status === "queued" || match.status === "running");
+  done = recordTournamentMatchResult(done, { matchId: m.id, winner: "A", scoreA: 80, scoreB: 60 });
 }
-const done = getTournament();
 check("после всех матчей статус done", done.status === "done");
-const pr = progress();
+const pr = tournamentFightCounts(done.matches);
 check("сыграны все матчи", pr.played === pr.total && pr.total === expectedMatches);
 check("турнирные очки не меняют разминочный рейтинг", leaderboard().every((p) => p.stats.battles <= MAX_WARMUP_BATTLES));
 
 // 4. Таблица отсортирована по очкам, места есть.
-const table = standings();
+const table = tournamentStandings(done, players);
 check("в таблице все участники ростера", table.length === t.roster.length);
 let sorted = true;
 for (let i = 1; i < table.length; i++) if (table[i - 1].tourStats.points < table[i].tourStats.points) sorted = false;
@@ -205,7 +206,77 @@ if (finalTb) {
 const finalRows = tournamentStandings(tiedTour, [{ id: "a", name: "A" }, { id: "b", name: "B" }, { id: "c", name: "C" }]);
 check("турнир завершается после уникального победителя тай-брейка", tiedTour.status === "done" && finalRows[0].id === "a");
 
-// 11. Сброс турнира.
+// 11. Backend worker: stale running recovery и выполнение queued-матчей без браузера.
+const staleBase = {
+  status: "running",
+  closed: true,
+  roster: ["a", "b", "c"],
+  statsById: {},
+  cursor: 0,
+  matches: [
+    { id: "m-1", index: 1, a: "a", b: "b", topicId: "tests_first", stage: "main", tiebreakRound: null, status: "running", winner: null, scoreA: 0, scoreB: 0, battleId: null, error: "", attempt: 1, startedAt: 1000 },
+    { id: "m-2", index: 2, a: "a", b: "c", topicId: "sql_nosql", stage: "main", tiebreakRound: null, status: "running", winner: null, scoreA: 0, scoreB: 0, battleId: null, error: "", attempt: 1, startedAt: 9950 },
+  ],
+};
+const recovered = recoverStaleMatches(staleBase, { now: 10000, timeoutMs: 5000 });
+check("stale running матч становится superseded error", recovered.matches.find((m) => m.id === "m-1")?.status === "error" && !!recovered.matches.find((m) => m.id === "m-1")?.supersededBy);
+check("fresh running матч остаётся running", recovered.matches.find((m) => m.id === "m-2")?.status === "running");
+const workerRetry = recovered.matches.find((m) => m.retryOf === "m-1");
+check("для stale running создаётся queued retry с attempt+1", workerRetry?.status === "queued" && workerRetry?.attempt === 2 && workerRetry?.a === "a" && workerRetry?.b === "b");
+
+let workerState = {
+  status: "running",
+  closed: true,
+  roster: ["a", "b"],
+  statsById: { a: { battles: 0, points: 0 }, b: { battles: 0, points: 0 } },
+  cursor: 0,
+  matches: [{ id: "m-1", index: 1, a: "a", b: "b", topicId: "tests_first", stage: "main", tiebreakRound: null, status: "queued", winner: null, scoreA: 0, scoreB: 0, battleId: null, error: "", attempt: 1 }],
+};
+const workerEvents = [];
+const worker = createTournamentWorker({
+  now: () => 12345,
+  timeoutMs: 5000,
+  concurrency: 1,
+  getTournament: () => workerState,
+  saveTournament: (next) => { workerState = next; workerEvents.push(next); return next; },
+  getAgent: (id) => ({ id, name: id, skills: ["aggressor"], config: {} }),
+  getTopic: () => ({ id: "tests_first", title: "TDD vs Код сначала", sideA: "A", sideB: "B" }),
+  runFight: async () => ({ winner: "A", scoreA: 80, scoreB: 60, history: { final: { winner: "A", score_a: 80, score_b: 60 } } }),
+  saveBattle: async () => ({ battleId: 4242 }),
+});
+await worker.tick();
+check("backend worker помечает queued матч running перед боем", workerEvents.some((state) => state.matches[0]?.status === "running" && state.matches[0]?.startedAt === 12345));
+check("backend worker завершает матч и пишет battleId", workerState.matches[0].status === "done" && workerState.matches[0].battleId === 4242);
+check("backend worker обновляет турнирную статистику", workerState.statsById.a.points === 4 && workerState.statsById.a.battles === 1);
+
+let hungState = {
+  status: "running",
+  closed: true,
+  roster: ["a", "b"],
+  statsById: {},
+  cursor: 0,
+  matches: [{ id: "m-1", index: 1, a: "a", b: "b", topicId: "tests_first", stage: "main", tiebreakRound: null, status: "queued", winner: null, scoreA: 0, scoreB: 0, battleId: null, error: "", attempt: 1 }],
+};
+const hungWorker = createTournamentWorker({
+  now: () => 555,
+  timeoutMs: 1,
+  concurrency: 1,
+  getTournament: () => hungState,
+  saveTournament: (next) => { hungState = next; return next; },
+  getAgent: (id) => ({ id, name: id, skills: ["aggressor"], config: {} }),
+  getTopic: () => ({ id: "tests_first", title: "TDD vs Код сначала", sideA: "A", sideB: "B" }),
+  runFight: async () => new Promise(() => {}),
+  saveBattle: async () => ({ battleId: 1 }),
+});
+const hungTick = await Promise.race([
+  hungWorker.tick().then(() => "returned"),
+  new Promise((resolve) => setTimeout(() => resolve("hung"), 50)),
+]);
+const hungRetry = hungState.matches.find((m) => m.retryOf === "m-1");
+check("backend worker timeout возвращает управление, если бой завис", hungTick === "returned");
+check("зависший бой уходит в error и получает retry", hungState.matches[0].status === "error" && hungRetry?.status === "queued");
+
+// 12. Сброс турнира.
 const reset = resetTournament();
 check("сброс турнира → idle и приём открыт", reset.status === "idle" && reset.closed === false);
 

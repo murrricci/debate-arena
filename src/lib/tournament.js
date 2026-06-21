@@ -12,8 +12,6 @@ import {
   visibleTournamentMatches,
   tournamentFightCounts,
   startTournament,
-  markTournamentMatchesRunning,
-  recordTournamentMatchError,
   recordTournamentMatchResult,
   tournamentStandings,
   selectTournamentRoster,
@@ -26,8 +24,6 @@ export {
   visibleTournamentMatches,
   tournamentFightCounts,
   startTournament,
-  markTournamentMatchesRunning,
-  recordTournamentMatchError,
   recordTournamentMatchResult,
   tournamentStandings,
   selectTournamentRoster,
@@ -141,16 +137,6 @@ export function beginTournament() {
   return postTournament("/api/tournament/start", {}, fallback);
 }
 
-export function markMatchesRunning(matchIds = []) {
-  const fallback = markTournamentMatchesRunning(getTournament(), matchIds);
-  return postTournament("/api/tournament/matches/running", { ids: matchIds }, fallback);
-}
-
-export function recordMatchError({ matchId, error }) {
-  const fallback = recordTournamentMatchError(getTournament(), { matchId, error });
-  return postTournament(`/api/tournament/matches/${encodeURIComponent(matchId)}/error`, { error }, fallback);
-}
-
 export function closeAndStart(options = {}) {
   const fallback = createTournamentFromLeaderboard(leaderboard(), options);
   if (fallback.error || !inBrowser) {
@@ -163,25 +149,6 @@ export function closeAndStart(options = {}) {
 export function closeRegistration() {
   const fallback = { ...getTournament(), closed: true };
   return postTournament("/api/tournament/import", { tournament: fallback }, fallback);
-}
-
-export function currentMatch() {
-  const t = getTournament();
-  if (!["ready", "running"].includes(t.status)) return null;
-  return t.matches.find((m) => m.status === "queued" || m.status === "running") || null;
-}
-
-export function recordMatchResult({ matchId, winner, scoreA, scoreB, battleId = null }) {
-  const t = getTournament();
-  if (!["ready", "running"].includes(t.status)) return t;
-  const match = matchId ? t.matches.find((m) => m.id === matchId) : currentMatch();
-  if (!match) return t;
-  const fallback = recordTournamentMatchResult(t, { matchId: match.id, winner, scoreA, scoreB, battleId });
-  return postTournament(
-    `/api/tournament/matches/${encodeURIComponent(match.id)}/result`,
-    { winner, scoreA, scoreB, battleId },
-    fallback
-  );
 }
 
 export function resetTournament() {
