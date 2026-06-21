@@ -59,6 +59,11 @@ export const styles = {
     letterSpacing: 1,
   },
   navLinkActive: { borderColor: C.yellow, color: C.yellow, background: "rgba(255,60,165,0.1)" },
+  navLinkDisabled: {
+    opacity: 0.35,
+    cursor: "not-allowed",
+    filter: "grayscale(0.6)",
+  },
 
   sectionLabel: { textAlign: "center", letterSpacing: 4, color: C.muted, fontSize: 13, marginBottom: 16 },
 

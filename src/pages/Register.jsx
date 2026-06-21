@@ -104,7 +104,7 @@ export default function Register() {
   }
 
   async function launchTournament() {
-    if (!confirm(`Закрыть приём заявок и сформировать турнир из топ-${TOP_N}? После этого апгрейд и новые заявки будут недоступны.`)) return;
+    if (!confirm(`Сформировать турнир из топ-${TOP_N} и закрыть разминку? Новые заявки, апгрейды и разминочные бои будут недоступны до отмены турнира.`)) return;
     try {
       const res = await closeAndStart();
       if (res?.error) return setError(res.error);
@@ -112,6 +112,18 @@ export default function Register() {
       navigate("/tournament");
     } catch (e) {
       setError("Не удалось сформировать турнир: " + e.message);
+    }
+  }
+
+  async function cancelTournament() {
+    if (!confirm("Отменить текущий турнир? Турнирная сетка и результаты турнирных боёв будут аннулированы. Активность вернётся в режим разминки, и турнир можно будет сформировать заново.")) return;
+    try {
+      setError("");
+      const next = await resetTournament();
+      setTour(next || getTournament());
+      resetForm();
+    } catch (e) {
+      setError("Не удалось отменить турнир: " + e.message);
     }
   }
 
@@ -227,20 +239,32 @@ export default function Register() {
           </>
         )}
         {tour.status !== "idle" && (
-          <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
-            <span style={{ color: C.green, fontWeight: 700 }}>
-              {tour.status === "running" ? "Турнир идёт" : "Турнир завершён"} · ростер {tour.roster.length}
-            </span>
-            <a href="#/scoreboard" target="_blank" rel="noreferrer" style={styles.btnGhost}
-              onClick={(e) => { e.preventDefault(); window.open("#/scoreboard", "debate-scoreboard", "width=1280,height=800"); }}>
-              🏆 ТУРНИРНАЯ ТАБЛИЦА ↗
-            </a>
-            <a href="#/tournament" style={styles.btnGhost}>🏆 К ТУРНИРУ</a>
-            <button type="button" style={{ ...styles.btnGhost, marginLeft: "auto", color: C.danger, borderColor: C.danger }}
-              onClick={async () => { if (confirm("Сбросить турнир и снова открыть приём заявок?")) { setTour(await resetTournament()); } }}>
-              ↺ сбросить турнир
-            </button>
-          </div>
+          <>
+            <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
+              <span style={{ color: C.green, fontWeight: 700 }}>
+                {tour.status === "ready" ? "Турнир сформирован" : tour.status === "running" ? "Турнир идёт" : "Активность завершена"} · ростер {tour.roster.length}
+              </span>
+              <a href="#/scoreboard" target="_blank" rel="noreferrer" style={styles.btnGhost}
+                onClick={(e) => { e.preventDefault(); window.open("#/scoreboard", "debate-scoreboard", "width=1280,height=800"); }}>
+                🏆 ТУРНИРНАЯ ТАБЛИЦА ↗
+              </a>
+              {tour.status !== "done" && <a href="#/tournament" style={styles.btnGhost}>🏆 К ТУРНИРУ</a>}
+            </div>
+
+            <div style={cfgStyles.cancelTournament}>
+              <div>
+                <div style={cfgStyles.cancelTitle}>ОТМЕНА ТУРНИРА</div>
+                <div style={cfgStyles.cancelText}>
+                  Отмена аннулирует текущую турнирную сетку и турнирные результаты, возвращает арену и таблицу в режим разминки.
+                  После этого можно провести тренировочные бои и сформировать новый турнир.
+                </div>
+              </div>
+              <button type="button" style={{ ...styles.btnGhost, color: C.danger, borderColor: C.danger, whiteSpace: "nowrap" }} onClick={cancelTournament}>
+                ОТМЕНИТЬ ТУРНИР
+              </button>
+            </div>
+            {error && <p style={{ color: C.danger, fontWeight: 700, margin: "12px 0 0" }}>{error}</p>}
+          </>
         )}
       </div>
 
@@ -302,6 +326,9 @@ const cfgStyles = {
   tuneHeader: { display: "flex", justifyContent: "space-between", alignItems: "center", fontWeight: 900, fontSize: 13, letterSpacing: 2, color: C.yellow, borderTop: `1px solid ${C.border}`, paddingTop: 18, marginBottom: 6 },
   tuneHint: { fontSize: 11, color: C.blue, textDecoration: "none", fontWeight: 700 },
   tradeoff: { fontSize: 12, color: "#c9b8e8", background: "rgba(255,60,165,0.08)", border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 12px", margin: "0 0 18px", lineHeight: 1.5 },
+  cancelTournament: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 14, marginTop: 16, paddingTop: 16, borderTop: `1px solid ${C.border}`, flexWrap: "wrap" },
+  cancelTitle: { color: C.danger, fontWeight: 900, fontSize: 12, letterSpacing: 2, marginBottom: 6 },
+  cancelText: { color: "#d7cdec", fontSize: 12, lineHeight: 1.5, maxWidth: 520 },
   segRow: { display: "flex", gap: 8, flexWrap: "wrap" },
   seg: { flex: "1 1 0", minWidth: 90, padding: "9px 8px", border: "2px solid", borderRadius: 8, cursor: "pointer", fontWeight: 700, fontSize: 12, fontFamily: "inherit", transition: "all 0.15s" },
   segHint: { fontSize: 11, color: C.muted, marginTop: 6, lineHeight: 1.45, fontStyle: "italic" },

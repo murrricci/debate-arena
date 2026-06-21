@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { C } from "../styles.js";
-import { leaderboard, resetScores } from "../lib/store.js";
+import { leaderboard } from "../lib/store.js";
 import { fighterFace } from "../lib/agent.js";
 import { subscribe } from "../lib/bus.js";
 import { getTournament, standings, progress } from "../lib/tournament.js";
@@ -93,13 +93,6 @@ export default function Scoreboard() {
         </div>
       )}
 
-      {!inTournament && (
-        <div style={{ textAlign: "center", padding: "2vh 0" }}>
-          <button style={S.ghost} onClick={async () => { if (confirm("Обнулить очки всех участников?")) { await resetScores(); force((n) => n + 1); } }}>
-            ↺ обнулить очки
-          </button>
-        </div>
-      )}
     </div>
   );
 }

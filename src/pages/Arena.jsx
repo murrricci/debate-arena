@@ -12,6 +12,7 @@ import { filterFighters, fighterOptionLabel } from "../lib/fighterSearch.js";
 import { runDebateFight } from "../lib/fightRunner.js";
 import { historyWithMode } from "../lib/battleHistory.js";
 import { clearLiveSnapshot, publishLiveSnapshot } from "../lib/liveState.js";
+import { isWarmupOpen, warmupStatusMessage } from "../lib/activityState.js";
 import PixelFighter from "../components/PixelFighter.jsx";
 import PixelArena from "../components/PixelArena.jsx";
 
@@ -87,7 +88,7 @@ export default function Arena() {
 
   // Запуск ручного боя (разминка) из текущих селекторов.
   function startManualFight() {
-    if (tour.closed) return setError("Разминка закрыта — турнир уже сформирован.");
+    if (!isWarmupOpen(tour)) return setError(warmupStatusMessage(tour));
     if (!A || !B || aId === bId) return;
     if (!canPlayWarmup(A) || !canPlayWarmup(B)) {
       return setError(`В разминке каждый агент играет максимум ${MAX_WARMUP_BATTLES} боя.`);
@@ -195,7 +196,7 @@ export default function Arena() {
     }
   }
 
-  const canFight = A && B && aId !== bId && !tour.closed && canPlayWarmup(A) && canPlayWarmup(B);
+  const canFight = A && B && aId !== bId && isWarmupOpen(tour) && canPlayWarmup(A) && canPlayWarmup(B);
 
   if (phase === "select") {
     return (
@@ -219,6 +220,7 @@ export default function Arena() {
 
 /* ---------- Экран выбора ---------- */
 function Selection({ people, aId, setAId, bId, setBId, topic, topicId, setTopicId, rollTopic, swapped, setSwapped, stanceA, stanceB, canFight, runFight, error, tour }) {
+  const warmupOpen = isWarmupOpen(tour);
   if (people.length < 2) {
     return (
       <div className="fade-in" style={{ textAlign: "center" }}>
@@ -233,9 +235,10 @@ function Selection({ people, aId, setAId, bId, setBId, topic, topicId, setTopicI
   return (
     <div className="fade-in">
       <p style={styles.sectionLabel}>ВЫБЕРИ БОЙЦОВ И ТЕМУ</p>
-      {tour.closed && (
+      {!warmupOpen && (
         <div style={{ ...styles.panel, maxWidth: 720, margin: "0 auto 18px", borderColor: C.yellow, textAlign: "center", color: C.yellow, fontWeight: 900 }}>
-          Разминка закрыта. Турнир сформирован — переходи во вкладку <a href="#/tournament" style={{ color: C.blue }}>🏆 ТУРНИР</a>.
+          {warmupStatusMessage(tour)}
+          {tour.status !== "done" && <> Переходи во вкладку <a href="#/tournament" style={{ color: C.blue }}>🏆 ТУРНИР</a>.</>}
         </div>
       )}
 
@@ -268,7 +271,7 @@ function Selection({ people, aId, setAId, bId, setBId, topic, topicId, setTopicI
 
       <div style={{ textAlign: "center", marginTop: 8 }}>
         <button style={styles.btn} onClick={runFight} disabled={!canFight}>▶ БОЙ</button>
-        {!tour.closed && (aId || bId) && !canFight && (
+        {warmupOpen && (aId || bId) && !canFight && (
           <div style={{ color: C.muted, marginTop: 10, fontSize: 12 }}>
             В разминке каждый агент играет максимум {MAX_WARMUP_BATTLES} боя.
           </div>

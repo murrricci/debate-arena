@@ -7,13 +7,20 @@ if (typeof BroadcastChannel !== "undefined") {
   channel = new BroadcastChannel(CHANNEL);
 }
 
+const localHandlers = new Set();
+
 export function publish(type, payload) {
+  for (const handler of localHandlers) handler(type, payload);
   if (channel) channel.postMessage({ type, payload });
 }
 
 export function subscribe(handler) {
-  if (!channel) return () => {};
+  localHandlers.add(handler);
+  if (!channel) return () => localHandlers.delete(handler);
   const listener = (e) => handler(e.data?.type, e.data?.payload);
   channel.addEventListener("message", listener);
-  return () => channel.removeEventListener("message", listener);
+  return () => {
+    localHandlers.delete(handler);
+    channel.removeEventListener("message", listener);
+  };
 }

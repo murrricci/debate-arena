@@ -74,6 +74,7 @@ export default function Tournament() {
   }, [tour.status, tour.matches, byId, topicById]);
 
   async function startQueue() {
+    if (!confirm("Запустить турнирные бои? Очередь начнёт проводить матчи автоматически, а разминка останется закрытой до отмены турнира.")) return;
     const next = await beginTournament();
     setTour(next);
   }
@@ -98,7 +99,10 @@ export default function Tournament() {
       <p style={styles.sectionLabel}>🏆 ТУРНИР · {activeTiebreak ? `ДОП. КРУГ ${activeTiebreak}` : "ВСЕ СО ВСЕМИ"}</p>
 
       {tour.status === "done" && (
-        <div style={T.done}>ТУРНИР ЗАВЕРШЁН</div>
+        <div style={T.done}>
+          ТУРНИР ЗАВЕРШЁН
+          <div style={T.doneSub}>Активность окончена. Новые бои больше не проводятся.</div>
+        </div>
       )}
       {activeTiebreak && (
         <div style={T.tiebreakBanner}>ТАЙ-БРЕЙК · ДОПОЛНИТЕЛЬНЫЙ КРУГ {activeTiebreak}</div>
@@ -277,6 +281,7 @@ const T = {
     fontSize: 28,
     letterSpacing: 3,
   },
+  doneSub: { marginTop: 8, color: C.muted, fontSize: 13, letterSpacing: 1, fontFamily: "'Courier New', monospace" },
   tiebreakBanner: {
     ...styles.panel,
     maxWidth: 760,
