@@ -1,3 +1,5 @@
+import { MAX_WARMUP_BATTLES } from "./scoring.js";
+
 function normalize(value) {
   return String(value ?? "").trim().replace(/^#/, "").toLowerCase();
 }
@@ -10,10 +12,11 @@ export function fighterOptionLabel(fighter) {
   return parts.join(" · ");
 }
 
-export function filterFighters(people = [], query = "", disabledId = "") {
+export function filterFighters(people = [], query = "", disabledId = "", options = {}) {
   const q = normalize(query);
   return people.filter((fighter) => {
     if (fighter.id === disabledId) return false;
+    if (options.onlyWarmupAvailable && (fighter.stats?.battles || 0) >= MAX_WARMUP_BATTLES) return false;
     if (!q) return true;
     const name = normalize(fighter.name);
     const externalId = normalize(fighter.externalId);

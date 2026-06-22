@@ -285,7 +285,7 @@ function FighterSelect({ side, color, value, onChange, people, disabledId }) {
   const sel = people.find((p) => p.id === value);
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
-  const matches = filterFighters(people, query, disabledId).slice(0, 8);
+  const matches = filterFighters(people, query, disabledId, { onlyWarmupAvailable: true }).slice(0, 8);
   const shownValue = open ? query : fighterOptionLabel(sel);
 
   function choose(fighter) {
