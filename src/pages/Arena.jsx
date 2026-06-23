@@ -455,6 +455,10 @@ function Versus({ A, B, stanceA, stanceB, topic }) {
 function Ring({ A, B, hpA, hpB, log, round, status, shake, verdict, battleId, historyError, logRef, topic, stanceA, stanceB, tierA, tierB, modelA, modelB, onRematch }) {
   const colorA = fighterColor(A, C.red);
   const colorB = fighterColor(B, C.blue);
+  // Результат всплывает модалкой сразу по финалу; её можно закрыть, чтобы
+  // вернуться к рингу и ленте — тогда вердикт остаётся обычной панелью внизу.
+  const [resultClosed, setResultClosed] = useState(false);
+  useEffect(() => { setResultClosed(false); }, [verdict]);
 
   // Боевые состояния пиксельных бойцов из текущей фазы боя.
   const actor = status.includes(A.name) ? "A" : status.includes(B.name) ? "B" : null;
@@ -506,32 +510,55 @@ function Ring({ A, B, hpA, hpB, log, round, status, shake, verdict, battleId, hi
         )}
       </div>
 
-      {verdict && (
-        <div style={styles.verdictPanel} className="ko-pop">
-          <div style={styles.koText}>{verdict.winner === "draw" ? "DRAW" : "K.O."}</div>
-          <div style={{ ...styles.winnerName, color: verdict.winner === "A" ? colorA : verdict.winner === "B" ? colorB : C.yellow }}>
-            {verdict.winner === "draw"
-              ? "НИЧЬЯ"
-              : `${verdict.winner === "A" ? fighterFace(A) : fighterFace(B)} ${verdict.winner === "A" ? A.name : B.name} ПОБЕЖДАЕТ`}
+      {verdict && !resultClosed && (
+        <div style={styles.modalOverlay} className="modal-backdrop" onClick={() => setResultClosed(true)}>
+          <div
+            style={{ ...styles.verdictPanel, ...styles.modalCard }}
+            className="ko-pop"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button style={styles.modalClose} title="Закрыть" onClick={() => setResultClosed(true)}>×</button>
+            <VerdictBody {...{ verdict, A, B, colorA, colorB, battleId, historyError, onRematch }} />
           </div>
-          <div style={styles.scoreLine}>
-            <span style={{ color: colorA }}>{A.name}: {verdict.score_a}</span>
-            {"  ◆  "}
-            <span style={{ color: colorB }}>{B.name}: {verdict.score_b}</span>
-          </div>
-          <div style={styles.rationale}>«{verdict.rationale}»</div>
-          <div style={{ display: "flex", gap: 10, justifyContent: "center", flexWrap: "wrap", marginTop: 16 }}>
-            {battleId && (
-              <Link to={`/battles/${battleId}`} style={{ ...styles.btnGhost, textDecoration: "none", color: C.yellow, borderColor: C.yellow }}>
-                ХОД БОЯ
-              </Link>
-            )}
-            <button style={styles.btn} onClick={onRematch}>↻ НОВЫЙ БОЙ</button>
-          </div>
-          {historyError && <div style={{ marginTop: 10, color: C.danger, fontSize: 12, fontWeight: 900 }}>{historyError}</div>}
+        </div>
+      )}
+
+      {verdict && resultClosed && (
+        <div style={styles.verdictPanel} className="fade-in">
+          <VerdictBody {...{ verdict, A, B, colorA, colorB, battleId, historyError, onRematch }} />
         </div>
       )}
     </div>
+  );
+}
+
+// Содержимое вердикта — общее для модалки (всплывает сразу) и для панели внизу
+// (видна после закрытия модалки).
+function VerdictBody({ verdict, A, B, colorA, colorB, battleId, historyError, onRematch }) {
+  return (
+    <>
+      <div style={styles.koText}>{verdict.winner === "draw" ? "DRAW" : "K.O."}</div>
+      <div style={{ ...styles.winnerName, color: verdict.winner === "A" ? colorA : verdict.winner === "B" ? colorB : C.yellow }}>
+        {verdict.winner === "draw"
+          ? "НИЧЬЯ"
+          : `${verdict.winner === "A" ? fighterFace(A) : fighterFace(B)} ${verdict.winner === "A" ? A.name : B.name} ПОБЕЖДАЕТ`}
+      </div>
+      <div style={styles.scoreLine}>
+        <span style={{ color: colorA }}>{A.name}: {verdict.score_a}</span>
+        {"  ◆  "}
+        <span style={{ color: colorB }}>{B.name}: {verdict.score_b}</span>
+      </div>
+      <div style={styles.rationale}>«{verdict.rationale}»</div>
+      <div style={{ display: "flex", gap: 10, justifyContent: "center", flexWrap: "wrap", marginTop: 16 }}>
+        {battleId && (
+          <Link to={`/battles/${battleId}`} style={{ ...styles.btnGhost, textDecoration: "none", color: C.yellow, borderColor: C.yellow }}>
+            ХОД БОЯ
+          </Link>
+        )}
+        <button style={styles.btn} onClick={onRematch}>↻ НОВЫЙ БОЙ</button>
+      </div>
+      {historyError && <div style={{ marginTop: 10, color: C.danger, fontSize: 12, fontWeight: 900 }}>{historyError}</div>}
+    </>
   );
 }
 
@@ -547,6 +574,7 @@ function HpBar({ name, face, color, hp, align, shaking, tier, model }) {
         <div style={{ ...styles.hpFill, width: `${hp}%`, background: hp > 50 ? C.green : hp > 25 ? C.yellow : C.danger }} />
       </div>
       <div style={{ ...styles.hpNum, color }}>{hp} HP</div>
+      {model && <div style={styles.hpModel} title={`Модель: ${model}`}>🧠 {model}</div>}
     </div>
   );
 }

@@ -7,6 +7,7 @@ import {
   addParticipant,
   removeParticipant,
   upgradeParticipant,
+  resetUpgrades,
   getParticipant,
   MAX_UPGRADES,
 } from "../lib/store.js";
@@ -100,6 +101,17 @@ export default function Register() {
       resetForm();
     } catch (e) {
       setError("Не удалось сохранить бойца: " + e.message);
+    }
+  }
+
+  async function resetUpgradesFor(p) {
+    if (!confirm(`Сбросить попытки изменения бойца «${p.name}»? Счётчик апгрейдов обнулится (${p.upgrades || 0}/${MAX_UPGRADES} → 0/${MAX_UPGRADES}), и бойца снова можно будет редактировать. Имя, скиллы, настройки и очки не изменятся.`)) return;
+    try {
+      setError("");
+      await resetUpgrades(p.id);
+      setList(getParticipants());
+    } catch (e) {
+      setError("Не удалось сбросить попытки: " + e.message);
     }
   }
 
@@ -272,10 +284,14 @@ export default function Register() {
       <p style={styles.sectionLabel}>ЗАРЕГИСТРИРОВАНО: {list.length}</p>
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
         {list.length === 0 && <p style={styles.empty}>Пока никого. Добавь первого бойца ↑</p>}
-        {list.map((p) => {
+        {list.map((p, i) => {
           const canUpgrade = !closed && (p.upgrades || 0) < MAX_UPGRADES;
+          const canReset = !closed && (p.upgrades || 0) > 0;
+          // Номер участника: внешний #id (из бота), иначе порядковый № в списке.
+          const number = p.externalId != null && p.externalId !== "" ? `#${p.externalId}` : `№${i + 1}`;
           return (
             <div key={p.id} style={{ ...styles.panel, display: "flex", alignItems: "center", gap: 14, padding: "12px 16px" }}>
+              <span style={cfgStyles.participantNumber} title={p.externalId != null ? "Номер пользователя" : "Порядковый номер"}>{number}</span>
               <span style={{ fontSize: 28 }}>{SKILL_BY_ID[p.skills[0]]?.emoji || "🤖"}</span>
               <div style={{ flex: 1 }}>
                 <div style={{ fontWeight: 900, fontSize: 16 }}>{p.name}</div>
@@ -290,6 +306,7 @@ export default function Register() {
                 {p.stats.wins}–{p.stats.losses}
               </div>
               {canUpgrade && <button style={styles.btnGhost} onClick={() => startEdit(p)} title="Апгрейд">✎</button>}
+              {canReset && <button style={styles.btnGhost} onClick={() => resetUpgradesFor(p)} title="Сбросить попытки изменения">↺</button>}
               {!closed && <button style={styles.btnGhost} onClick={async () => { await removeParticipant(p.id); setList(getParticipants()); }}>✕</button>}
             </div>
           );
@@ -332,4 +349,5 @@ const cfgStyles = {
   segRow: { display: "flex", gap: 8, flexWrap: "wrap" },
   seg: { flex: "1 1 0", minWidth: 90, padding: "9px 8px", border: "2px solid", borderRadius: 8, cursor: "pointer", fontWeight: 700, fontSize: 12, fontFamily: "inherit", transition: "all 0.15s" },
   segHint: { fontSize: 11, color: C.muted, marginTop: 6, lineHeight: 1.45, fontStyle: "italic" },
+  participantNumber: { minWidth: 44, textAlign: "center", fontWeight: 900, fontSize: 13, color: C.blue, background: `${C.blue}1a`, border: `1px solid ${C.border}`, borderRadius: 6, padding: "4px 6px", whiteSpace: "nowrap" },
 };

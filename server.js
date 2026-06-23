@@ -187,7 +187,49 @@ function logToFile(record) {
   );
 }
 
-if (!API_KEY) {
+// Мок-режим: LLM_MOCK=1 → бэкенд не ходит в провайдера, а сам отдаёт правдоподобные
+// ответы (реплики бойцов + корректный JSON судьи). Для локальной проверки боя без сети,
+// токенов и без ключа провайдера. Реальные вызовы возвращаются при LLM_MOCK=0/пусто.
+const MOCK = /^(1|true|on|yes)$/i.test((process.env.LLM_MOCK || "").trim());
+
+// Заготовки реплик бойца для мока — берём случайную, длину обрежет фронт по бюджету слов.
+const MOCK_REPLIES = [
+  "Это самоочевидно: факты на моей стороне, а ваш тезис рассыпается при первом же вопросе.",
+  "Вы путаете причину и следствие — данные говорят об обратном, и зал это прекрасно видит.",
+  "Красивые слова, но ни одного аргумента. Я опираюсь на логику, а не на эмоции.",
+  "Ваша позиция держится на страхе, моя — на доказательствах. Выбор очевиден.",
+  "Парирую: ваш пример — исключение, а правило работает ровно против вас.",
+  "Сильное заявление без единого пруфа. Давайте по существу — и вы проиграете.",
+];
+const rnd = (n) => Math.floor(Math.random() * n);
+
+// Имитация ответа модели в формате, который ждёт фронт/судья.
+// judge=true + system со словом "winner" → финальный вердикт; иначе судья раунда; иначе боец.
+function mockModelResponse({ system = "", judge, label }) {
+  const model = "mock/local";
+  const usage = { total_tokens: 300 + rnd(500), prompt_tokens: 0, completion_tokens: 0, cost_rub: 0, balance: 0 };
+
+  if (judge && /"winner"/.test(system)) {
+    const score_a = 55 + rnd(45);
+    const score_b = 55 + rnd(45);
+    const winner = score_a === score_b ? "draw" : score_a > score_b ? "A" : "B";
+    const text = JSON.stringify({ winner, score_a, score_b, rationale: "Имитация вердикта: обе стороны держались уверенно, но перевес по аргументам решил исход." });
+    return { text, usage, model };
+  }
+  if (judge) {
+    // Критерии вытаскиваем прямо из шейпа в системном промпте ("<id>": N) — не зашиваем.
+    const ids = [...new Set([...system.matchAll(/"(\w+)":\s*N/g)].map((m) => m[1]))];
+    const crit = ids.length ? ids : ["persuasion", "evidence", "rebuttal", "style"];
+    const scores = () => Object.fromEntries(crit.map((id) => [id, 5 + rnd(6)])); // 5..10
+    const text = JSON.stringify({ a: scores(), b: scores(), note: "имитация: бьют по делу" });
+    return { text, usage, model };
+  }
+  return { text: MOCK_REPLIES[rnd(MOCK_REPLIES.length)], usage, model };
+}
+
+if (MOCK) {
+  console.warn("\n🎭  LLM_MOCK=1 — мок-режим: ответы моделей имитируются, провайдер не вызывается.\n");
+} else if (!API_KEY) {
   console.warn(
     "\n⚠️  Ключ сервиса не задан (LLM_API_KEY / OPENROUTER_API_KEY). Скопируй .env.example в .env и впиши ключ.\n"
   );
@@ -256,14 +298,22 @@ async function callModel(model, chatMessages, max_tokens, temperature = 0.8, rea
 // Бэкенд приводит к OpenAI-формату (system первым сообщением), пробует модели списка
 // выбранного тира по очереди, затем общие фоллбэки, и только если всё легло — отдаёт ошибку.
 app.post("/api/claude", async (req, res) => {
-  if (!API_KEY) {
-    return res.status(500).json({ error: "Ключ сервиса (LLM_API_KEY / OPENROUTER_API_KEY) не настроен на сервере" });
-  }
   // label — необязательная метка вызова (напр. «R2·A»), приходит с фронта только для логов.
   // judge:true — это судья: идёт на отдельный тир (JUDGE_TIER) и со своим reasoning.
   const { system, messages, max_tokens = 1000, model, tier, temperature, label, judge } = req.body || {};
   if (!Array.isArray(messages)) {
     return res.status(400).json({ error: "messages обязателен и должен быть массивом" });
+  }
+
+  // Мок-режим: имитируем ответ без обращения к провайдеру (и без ключа).
+  if (MOCK) {
+    const mock = mockModelResponse({ system, judge, label });
+    tlog(`🎭  [${label || "—"}] MOCK${judge ? " (судья)" : ""} → ${mock.text.slice(0, 70).replace(/\s+/g, " ")}…`);
+    return res.json({ text: mock.text, usage: mock.usage, model: mock.model });
+  }
+
+  if (!API_KEY) {
+    return res.status(500).json({ error: "Ключ сервиса (LLM_API_KEY / OPENROUTER_API_KEY) не настроен на сервере" });
   }
 
   const chatMessages = system ? [{ role: "system", content: system }, ...messages] : messages;
@@ -504,6 +554,13 @@ app.patch("/api/agents/:id", requireArenaKey, (req, res) => {
   res.json(agents.withLimit(r.agent));
 });
 
+// Сброс лимита правок агента (оператор заново открывает апгрейды). Очки/статы не трогаем.
+app.post("/api/agents/:id/reset-upgrades", requireArenaKey, (req, res) => {
+  const r = agents.resetUpgrades(req.params.id);
+  if (r.error === "not_found") return res.status(404).json({ error: "not_found" });
+  res.json(agents.withLimit(r.agent));
+});
+
 app.delete("/api/agents/:id", requireArenaKey, (req, res) => {
   res.json(agents.removeAgent(req.params.id));
 });
@@ -640,11 +697,12 @@ app.delete("/api/live", requireArenaKey, (_req, res) => {
 });
 
 app.get("/api/health", (_req, res) => {
-  res.json({ ok: true, baseUrl: BASE_URL, tiers: TIERS, fallbacks: FALLBACKS, keyConfigured: Boolean(API_KEY), arenaApi: Boolean(ARENA_KEY) });
+  res.json({ ok: true, mock: MOCK, baseUrl: BASE_URL, tiers: TIERS, fallbacks: FALLBACKS, keyConfigured: Boolean(API_KEY), arenaApi: Boolean(ARENA_KEY) });
 });
 
 app.listen(PORT, () => {
   console.log(`\n🥊  Debate Arena backend на http://localhost:${PORT}`);
+  console.log(`   режим: ${MOCK ? "🎭 МОК (LLM_MOCK=1, провайдер не вызывается)" : "реальные вызовы провайдера"}`);
   console.log(`   сервис: ${BASE_URL}`);
   TIERS.forEach((list, i) => console.log(`   тир ${i + 1}: ${list.join(", ")}`));
   console.log(`   тир судьи: ${JUDGE_TIER.join(", ")}`);
