@@ -131,6 +131,21 @@ export function upgradeParticipant(id, { name, skills, custom, config }) {
     });
 }
 
+// Сброс счётчика правок: снова открывает бойцу лимит апгрейдов. Статистику не трогает.
+export function resetUpgrades(id) {
+  if (!inBrowser) {
+    const p = cache.find((x) => x.id === id);
+    if (!p) return null;
+    setCache(cache.map((x) => (x.id === id ? { ...x, upgrades: 0 } : x)));
+    return getParticipant(id);
+  }
+  return track(request("POST", `/api/agents/${id}/reset-upgrades`)).then((r) => {
+    const agent = r?.agent || r;
+    reconcile(agent);
+    return agent;
+  });
+}
+
 export function removeParticipant(id) {
   if (!inBrowser) {
     setCache(cache.filter((p) => p.id !== id));

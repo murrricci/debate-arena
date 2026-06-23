@@ -282,6 +282,14 @@ export function upgradeAgent(by, patch = {}) {
   });
 }
 
+// --- сброс счётчика правок: оператор заново открывает агенту лимит апгрейдов ---
+// Меняет только колонку upgrades; имя/скиллы/конфиг/статистика не трогаются.
+export function resetUpgrades(id) {
+  const info = db.prepare("UPDATE agents SET upgrades = 0 WHERE id = ?").run(id);
+  if (info.changes === 0) return { error: "not_found" };
+  return { agent: getAgentById(id) };
+}
+
 function insertBattleRow({ aId, bId, winner, scoreA = 0, scoreB = 0, topic = null, tournament = false, history = null } = {}) {
   const info = db.prepare(`
     INSERT INTO battles (a_id, b_id, winner, score_a, score_b, topic, tournament, history, created_at)

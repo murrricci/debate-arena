@@ -204,6 +204,45 @@ export const styles = {
   judgeLine: { alignSelf: "center", color: C.yellow, fontSize: 15, fontWeight: 700, letterSpacing: 1, padding: "3px 0" },
 
   verdictPanel: { textAlign: "center", maxWidth: 720, margin: "24px auto 0", border: `3px solid ${C.yellow}`, borderRadius: 16, padding: 28, background: "rgba(255,60,165,0.07)" },
+
+  // Модалка с результатом боя — всплывает поверх ринга сразу по финалу.
+  modalOverlay: {
+    position: "fixed",
+    inset: 0,
+    zIndex: 200,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 20,
+    background: "rgba(5,3,12,0.8)",
+    backdropFilter: "blur(3px)",
+  },
+  modalCard: {
+    position: "relative",
+    width: "100%",
+    maxWidth: 720,
+    maxHeight: "90vh",
+    overflowY: "auto",
+    margin: 0,
+    background: "#150c28",
+    boxShadow: "0 0 60px rgba(217,77,255,0.45)",
+  },
+  modalClose: {
+    position: "absolute",
+    top: 12,
+    right: 12,
+    width: 36,
+    height: 36,
+    borderRadius: 8,
+    border: `2px solid ${C.border}`,
+    background: "transparent",
+    color: C.muted,
+    cursor: "pointer",
+    fontSize: 22,
+    lineHeight: "30px",
+    fontFamily: "inherit",
+    zIndex: 1,
+  },
   koText: { fontSize: 56, fontWeight: 900, color: C.yellow, fontFamily: "'Arial Black', sans-serif", textShadow: "0 0 30px rgba(217,77,255,0.7)", letterSpacing: 6 },
   winnerName: { fontSize: 24, fontWeight: 900, marginTop: 8, letterSpacing: 1 },
   scoreLine: { marginTop: 14, fontSize: 14, fontWeight: 700 },
@@ -238,6 +277,8 @@ export const css = `
   @keyframes vsPop { from{transform:scale(0);opacity:0} 60%{transform:scale(1.4)} to{transform:scale(1);opacity:1} }
   .ko-pop { animation: koPop 0.5s ease; }
   @keyframes koPop { from{transform:scale(0.7);opacity:0} to{transform:scale(1);opacity:1} }
+  .modal-backdrop { animation: backdropIn 0.2s ease; }
+  @keyframes backdropIn { from{opacity:0} to{opacity:1} }
   @keyframes glow { 0%,100%{box-shadow:0 0 12px rgba(255,60,165,0.35)} 50%{box-shadow:0 0 28px rgba(255,60,165,0.8)} }
   .glow { animation: glow 1.8s infinite; }
   * { scrollbar-width: thin; scrollbar-color: #2a2a3e transparent; }
