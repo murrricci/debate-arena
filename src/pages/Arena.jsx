@@ -574,6 +574,7 @@ function HpBar({ name, face, color, hp, align, shaking, tier, model }) {
         <div style={{ ...styles.hpFill, width: `${hp}%`, background: hp > 50 ? C.green : hp > 25 ? C.yellow : C.danger }} />
       </div>
       <div style={{ ...styles.hpNum, color }}>{hp} HP</div>
+      {model && <div style={styles.hpModel} title={`Модель: ${model}`}>🧠 {model}</div>}
     </div>
   );
 }

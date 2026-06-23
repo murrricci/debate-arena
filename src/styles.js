@@ -158,6 +158,7 @@ export const styles = {
   hpTrack: { height: 28, background: "#1a0f33", border: `2px solid ${C.border}`, borderRadius: 4, overflow: "hidden" },
   hpFill: { height: "100%", transition: "width 0.6s ease", boxShadow: "inset 0 0 8px rgba(255,255,255,0.3)" },
   hpNum: { fontSize: 14, fontWeight: 700, marginTop: 4 },
+  hpModel: { fontSize: 11, fontWeight: 700, marginTop: 3, color: "#8a7da8", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "100%" },
   arena: {
     display: "flex",
     alignItems: "flex-end",
